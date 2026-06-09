@@ -1,0 +1,169 @@
+#!/bin/bash
+# run_fastsurfer.sh
+# Submits FastSurfer segmentation and surface reconstruction as chained SLURM jobs.
+# All SBATCH directives are read from the run_config file in the pipeline config.
+# Echoes the surface job ID to stdout; all other output goes to stderr.
+#
+# Usage (called by charon.sh):
+#   SURF_JOB_ID=$(bash run_fastsurfer.sh --subject <sub> --t1 <path> --config <path>)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/utils/logging.sh"
+
+# ============================================================
+# ARGUMENT PARSING
+# ============================================================
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --subject) SUBJECT=$2; shift 2;;
+        --session) SESSION=$2; shift 2;;
+        --t1)      T1_FILE=$2; shift 2;;
+        --config)  CONFIG=$2;  shift 2;;
+        *) shift;;
+    esac
+done
+
+# ============================================================
+# READ CONFIG AND SLURM OPTIONS
+# ============================================================
+
+_cfg()   { grep "^${1}:" "$CONFIG"          | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | xargs; }
+_slurm() { grep "^${1}:" "$RUN_CONFIG_FILE" 2>/dev/null | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | xargs; }
+
+FASTSURFER_SIF="$(_cfg fastsurfer_sif)"
+FS_LICENSE="$(_cfg fs_license)"
+WORKDIR="$(_cfg workdir)"
+RUN_CONFIG_FILE="$(_cfg run_config)"
+PILOT="$(_cfg pilot)"
+
+if [[ "$PILOT" != "true" && ( -z "$RUN_CONFIG_FILE" || ! -f "$RUN_CONFIG_FILE" ) ]]; then
+    log_error "SLURM options file not found in config. Pass --run_config to charon.sh." >&2
+    exit 1
+fi
+
+# Segmentation SLURM settings
+SEG_ACCOUNT="$(_slurm fastsurfer_seg_account)"
+SEG_CPUS="$(_slurm fastsurfer_seg_cpus_per_task)"
+SEG_MEM="$(_slurm fastsurfer_seg_mem)"
+SEG_GRES="$(_slurm fastsurfer_seg_gres)"
+SEG_CONSTRAINT="$(_slurm fastsurfer_seg_constraint)"
+SEG_TIME="$(_slurm fastsurfer_seg_time)"
+
+# Surface SLURM settings
+SURF_ACCOUNT="$(_slurm fastsurfer_surf_account)"
+SURF_CPUS="$(_slurm fastsurfer_surf_cpus_per_task)"
+SURF_MEM="$(_slurm fastsurfer_surf_mem)"
+SURF_TIME="$(_slurm fastsurfer_surf_time)"
+
+# FastSurfer tool options
+FS_3T="$(_slurm fastsurfer_3T)"
+FS_THREADS="$(_slurm fastsurfer_threads)"
+
+if [[ "$PILOT" != "true" && ( -z "$SEG_ACCOUNT" || -z "$SURF_ACCOUNT" ) ]]; then
+    log_error "fastsurfer_seg_account / fastsurfer_surf_account not set in: $RUN_CONFIG_FILE" >&2
+    exit 1
+fi
+
+# ============================================================
+# PATHS
+# ============================================================
+
+SESSION_DIR="$WORKDIR/$SUBJECT${SESSION:+/$SESSION}"
+FS_OUTDIR="$SESSION_DIR/fastsurfer"
+LOG_DIR="$SESSION_DIR/logs"
+
+T1_DIR="$(dirname "$T1_FILE")"
+T1_FNAME="$(basename "$T1_FILE")"
+LICENSE_DIR="$(dirname "$FS_LICENSE")"
+LICENSE_FNAME="$(basename "$FS_LICENSE")"
+
+# ============================================================
+# SUBMIT SEGMENTATION JOB
+# ============================================================
+
+SEG_SCRIPT="${LOG_DIR}/seg_${SUBJECT#sub-}.sh"
+{
+    echo "#!/bin/bash"
+    echo "#SBATCH --job-name=seg_${SUBJECT#sub-}"
+    echo "#SBATCH --account=${SEG_ACCOUNT}"
+    [[ -n "$SEG_CPUS"       ]] && echo "#SBATCH --cpus-per-task=${SEG_CPUS}"
+    [[ -n "$SEG_MEM"        ]] && echo "#SBATCH --mem=${SEG_MEM}"
+    [[ -n "$SEG_GRES"       ]] && echo "#SBATCH --gres=${SEG_GRES}"
+    [[ -n "$SEG_CONSTRAINT" ]] && echo "#SBATCH -C ${SEG_CONSTRAINT}"
+    [[ -n "$SEG_TIME"       ]] && echo "#SBATCH --time=${SEG_TIME}"
+    echo "#SBATCH --output=${LOG_DIR}/seg_${SUBJECT#sub-}_%j.log"
+    echo ""
+    echo "module load singularity"
+    echo ""
+    echo "singularity exec --nv --no-mount home,cwd -e \\"
+    echo "  -B ${T1_DIR}:/data \\"
+    echo "  -B ${FS_OUTDIR}:/output \\"
+    echo "  -B ${LICENSE_DIR}:/fs_license \\"
+    echo "  ${FASTSURFER_SIF} \\"
+    echo "  /fastsurfer/run_fastsurfer.sh \\"
+    echo "  --fs_license /fs_license/${LICENSE_FNAME} \\"
+    echo "  --t1 /data/${T1_FNAME} \\"
+    echo "  --sid ${SUBJECT} --sd /output \\"
+    [[ "$FS_3T" == "true" ]] && echo "  --3T \\"
+    echo "  --threads ${FS_THREADS:-${SEG_CPUS:-4}} --seg_only"
+} > "$SEG_SCRIPT"
+
+if [[ "$PILOT" == "true" ]]; then
+    log_info "DRY RUN — FastSurfer seg job for $SUBJECT:" >&2
+    cat "$SEG_SCRIPT" >&2
+    SEG_JOB_ID="DRY_RUN"
+else
+    SEG_JOB_ID=$(sbatch --parsable "$SEG_SCRIPT")
+    if [[ -z "$SEG_JOB_ID" ]]; then
+        log_error "Failed to submit FastSurfer seg job for $SUBJECT" >&2
+        exit 1
+    fi
+    log_info "Submitted seg job $SEG_JOB_ID for $SUBJECT" >&2
+fi
+
+# ============================================================
+# SUBMIT SURFACE JOB (depends on seg)
+# ============================================================
+
+SURF_SCRIPT="${LOG_DIR}/surf_${SUBJECT#sub-}.sh"
+{
+    echo "#!/bin/bash"
+    echo "#SBATCH --job-name=surf_${SUBJECT#sub-}"
+    echo "#SBATCH --account=${SURF_ACCOUNT}"
+    [[ -n "$SURF_CPUS" ]] && echo "#SBATCH --cpus-per-task=${SURF_CPUS}"
+    [[ -n "$SURF_MEM"  ]] && echo "#SBATCH --mem=${SURF_MEM}"
+    [[ -n "$SURF_TIME" ]] && echo "#SBATCH --time=${SURF_TIME}"
+    echo "#SBATCH --output=${LOG_DIR}/surf_${SUBJECT#sub-}_%j.log"
+    echo "#SBATCH --dependency=afterok:${SEG_JOB_ID}"
+    echo ""
+    echo "module load singularity"
+    echo ""
+    echo "singularity exec --no-mount home,cwd -e \\"
+    echo "  -B ${T1_DIR}:/data \\"
+    echo "  -B ${FS_OUTDIR}:/output \\"
+    echo "  -B ${LICENSE_DIR}:/fs_license \\"
+    echo "  ${FASTSURFER_SIF} \\"
+    echo "  /fastsurfer/run_fastsurfer.sh \\"
+    echo "  --fs_license /fs_license/${LICENSE_FNAME} \\"
+    echo "  --t1 /data/${T1_FNAME} \\"
+    echo "  --sid ${SUBJECT} --sd /output \\"
+    [[ "$FS_3T" == "true" ]] && echo "  --3T \\"
+    echo "  --threads ${FS_THREADS:-${SURF_CPUS:-4}} --surf_only"
+} > "$SURF_SCRIPT"
+
+if [[ "$PILOT" == "true" ]]; then
+    log_info "DRY RUN — FastSurfer surf job for $SUBJECT (would depend on $SEG_JOB_ID):" >&2
+    cat "$SURF_SCRIPT" >&2
+    SURF_JOB_ID="DRY_RUN"
+else
+    SURF_JOB_ID=$(sbatch --parsable "$SURF_SCRIPT")
+    if [[ -z "$SURF_JOB_ID" ]]; then
+        log_error "Failed to submit FastSurfer surf job for $SUBJECT" >&2
+        exit 1
+    fi
+    log_info "Submitted surf job $SURF_JOB_ID for $SUBJECT (depends on $SEG_JOB_ID)" >&2
+fi
+
+echo "$SURF_JOB_ID"
+exit 0

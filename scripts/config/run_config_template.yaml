@@ -1,0 +1,101 @@
+# charon run configuration template.
+# Copy this file, fill in your values, and pass it via --run_config.
+# Empty values are omitted from job scripts. Boolean flags must be true to take effect.
+
+# ─── SLURM: FastSurfer segmentation (GPU) ────────────────────────────────────
+fastsurfer_seg_account:       ""    # SLURM project account
+fastsurfer_seg_cpus_per_task: ""    # CPU cores per task
+fastsurfer_seg_mem:           ""    # Total memory, e.g. 7G
+fastsurfer_seg_gres:          ""    # GPU resource request, e.g. gpu:1
+fastsurfer_seg_constraint:    ""    # Node feature constraint, e.g. gpu
+fastsurfer_seg_time:          ""    # Wall time limit HH:MM:SS
+
+# ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────
+fastsurfer_surf_account:       ""
+fastsurfer_surf_cpus_per_task: ""
+fastsurfer_surf_mem:           ""    # Surface recon is memory-intensive; 16G+ recommended
+fastsurfer_surf_time:          ""
+
+# ─── SLURM: PETprep ──────────────────────────────────────────────────────────
+petprep_account:    ""
+petprep_partition:  ""    # SLURM partition, e.g. node
+petprep_ntasks:     ""    # Tasks allocated; also sets --nthreads passed to PETprep
+petprep_time:       ""    # PETprep is slow; allow at least 8–20h per subject
+
+# ─── SLURM: Finalize ─────────────────────────────────────────────────────────
+finalize_account:       ""
+finalize_cpus_per_task: ""    # 2 CPUs is sufficient for status check + tar
+finalize_mem:           ""    # 4G is sufficient; increase for very large cohorts
+finalize_time:          ""    # Time to write status TSV and compress workdir
+
+# ─── FastSurfer options ───────────────────────────────────────────────────────
+fastsurfer_3T:      true    # Set false for 1.5T scanners
+fastsurfer_threads: ""      # Thread count passed to FastSurfer; defaults to fastsurfer_seg_cpus_per_task
+
+# ─── PETprep: resources ───────────────────────────────────────────────────────
+petprep_mem_mb:        32000  # Memory limit passed to PETprep (MB)
+petprep_omp_nthreads:  ""     # OpenMP threads per process; defaults to petprep_ntasks / 2
+
+# ─── PETprep: execution flags ─────────────────────────────────────────────────
+petprep_stop_on_first_crash: true   # Abort on first error rather than continuing
+petprep_notrack:             true   # Disable usage tracking
+petprep_verbose:             true   # Verbose logging
+
+# ─── PETprep: input / output ──────────────────────────────────────────────────
+petprep_skip_bids_validation:        false  # Skip BIDS validation (faster but risky)
+petprep_output_spaces:               ""     # Output spaces, e.g. "MNI152NLin2009cAsym T1w"
+petprep_output_layout:               ""     # Output directory layout: bids or legacy
+petprep_level:                       ""     # Processing level: minimal, resampling, or full
+
+# ─── PETprep: anatomical ──────────────────────────────────────────────────────
+petprep_subject_anatomical_reference: ""    # How to select the anatomical reference across sessions: first-lex, unbiased, or sessionwise
+petprep_anatref:                     ""     # Anatomical image to use as reference: t1w, nu, or auto
+petprep_longitudinal:                false  # Enable longitudinal processing mode (currently incompatible with charon)
+petprep_ignore:                      ""     # Modalities to ignore: t2w and/or flair (space-separated)
+petprep_skull_strip_template:        ""     # Template for skull stripping, e.g. OASIS30ANTs
+petprep_skull_strip_t1w:             ""     # Skull-strip behaviour: auto, skip, or force
+petprep_skull_strip_fixed_seed:      false  # Use a fixed random seed for skull stripping
+petprep_submm_recon:                 ""     # true → --submm-recon | false → --no-submm-recon | blank → omit
+petprep_fs_no_reconall:              false  # Skip FreeSurfer recon-all (use pre-existing surfaces)
+petprep_fs_no_resume:                false  # Do not resume an interrupted FreeSurfer run
+
+# ─── PETprep: PET processing ──────────────────────────────────────────────────
+petprep_petref:                      ""     # PET reference frame for registration: template, twa, sum, first5min, or auto
+petprep_pet2anat_dof:                ""     # Degrees of freedom for PET→T1 registration: 6 (rigid), 9, or 12 (full affine)
+petprep_pet2anat_method:             ""     # Registration algorithm: mri_coreg, robust, ants, or auto
+petprep_pet2anat_no_anat_crop:       false  # Disable anatomical image cropping before registration
+petprep_hmc_fwhm:                    ""     # Gaussian smoothing FWHM (mm) applied before head motion correction
+petprep_hmc_start_time:              ""     # Skip frames before this time (seconds) for HMC
+petprep_hmc_init_frame:              ""     # Frame index to use as HMC initialisation reference
+petprep_hmc_init_frame_fix:          false  # Use the init frame as fixed reference throughout HMC
+petprep_hmc_off:                     false  # Disable head motion correction entirely
+petprep_force_bbr:                   false  # Force boundary-based registration for PET→T1
+petprep_force_no_bbr:                false  # Disable boundary-based registration
+
+# ─── PETprep: segmentation & PVC ──────────────────────────────────────────────
+petprep_seg:                         ""     # Segmentation atlases, e.g. "gtm brainstem aparcaseg" (space-separated)
+petprep_ref_mask_name:               ""     # Name of the reference region mask for SUVR computation
+petprep_ref_mask_index:              ""     # Index/indices within the mask (space-separated)
+petprep_pvc_tool:                    ""     # Partial volume correction software: petpvc or petsurfer
+petprep_pvc_method:                  ""     # PVC algorithm, e.g. GTM, RBV, IY
+petprep_pvc_psf:                     ""     # Scanner point spread function FWHM in mm (space-separated x y z)
+
+# ─── PETprep: surface & parcellation ──────────────────────────────────────────
+petprep_cifti_output:                ""     # Project to CIFTI dense timeseries: 91k or 170k
+petprep_no_msm:                      false  # Disable multimodal surface matching
+petprep_medial_surface_nan:          false  # Set medial wall vertices to NaN in surface outputs
+petprep_project_goodvoxels:          false  # Only project voxels with good signal to surface
+petprep_return_all_components:       false  # Return all ICA components rather than just signal
+
+# ─── PETprep: confounds ───────────────────────────────────────────────────────
+petprep_fd_spike_threshold:          ""     # Framewise displacement threshold for spike detection (mm)
+petprep_dvars_spike_threshold:       ""     # DVARS threshold for spike detection
+
+# ─── PETprep: misc ────────────────────────────────────────────────────────────
+petprep_random_seed:                 ""     # Random seed for reproducibility
+petprep_aggregate_session_reports:   ""     # Number of sessions per subject to include in summary report
+petprep_track_carbon:                false  # Estimate and report CO₂ emissions
+petprep_country_code:                ""     # ISO country code used for carbon tracking, e.g. SWE
+petprep_write_graph:                 false  # Write the workflow graph to a file
+petprep_resource_monitor:            false  # Enable CPU/memory resource monitoring
+petprep_debug:                       ""     # Enable debug mode: pdb, debug, or all
