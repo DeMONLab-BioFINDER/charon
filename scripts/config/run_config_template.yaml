@@ -4,14 +4,16 @@
 
 # ─── SLURM: FastSurfer segmentation (GPU) ────────────────────────────────────
 fastsurfer_seg_account:       ""    # SLURM project account
+fastsurfer_seg_partition:     ""    # SLURM partition, e.g. node
 fastsurfer_seg_cpus_per_task: ""    # CPU cores per task
 fastsurfer_seg_mem:           ""    # Total memory, e.g. 7G
-fastsurfer_seg_gres:          ""    # GPU resource request, e.g. gpu:1
+fastsurfer_seg_gpus:          ""    # Number of GPUs to request (Bianca: --gpus=N with -C gpu constraint)
 fastsurfer_seg_constraint:    ""    # Node feature constraint, e.g. gpu
 fastsurfer_seg_time:          ""    # Wall time limit HH:MM:SS
 
 # ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────
 fastsurfer_surf_account:       ""
+fastsurfer_surf_partition:     ""    # SLURM partition, e.g. node
 fastsurfer_surf_cpus_per_task: ""
 fastsurfer_surf_mem:           ""    # Surface recon is memory-intensive; 16G+ recommended
 fastsurfer_surf_time:          ""
@@ -29,7 +31,6 @@ finalize_mem:           ""    # 4G is sufficient; increase for very large cohort
 finalize_time:          ""    # Time to write status TSV and compress workdir
 
 # ─── FastSurfer options ───────────────────────────────────────────────────────
-fastsurfer_3T:      true    # Set false for 1.5T scanners
 fastsurfer_threads: ""      # Thread count passed to FastSurfer; defaults to fastsurfer_seg_cpus_per_task
 
 # ─── PETprep: resources ───────────────────────────────────────────────────────
@@ -42,40 +43,38 @@ petprep_notrack:             true   # Disable usage tracking
 petprep_verbose:             true   # Verbose logging
 
 # ─── PETprep: input / output ──────────────────────────────────────────────────
-petprep_skip_bids_validation:        false  # Skip BIDS validation (faster but risky)
+petprep_skip_bids_validation:        true   # Skip BIDS validation (faster but risky)
 petprep_output_spaces:               ""     # Output spaces, e.g. "MNI152NLin2009cAsym T1w"
 petprep_output_layout:               ""     # Output directory layout: bids or legacy
 petprep_level:                       ""     # Processing level: minimal, resampling, or full
 
 # ─── PETprep: anatomical ──────────────────────────────────────────────────────
-petprep_subject_anatomical_reference: ""    # How to select the anatomical reference across sessions: first-lex, unbiased, or sessionwise
 petprep_anatref:                     ""     # Anatomical image to use as reference: t1w, nu, or auto
 petprep_longitudinal:                false  # Enable longitudinal processing mode (currently incompatible with charon)
 petprep_ignore:                      ""     # Modalities to ignore: t2w and/or flair (space-separated)
 petprep_skull_strip_template:        ""     # Template for skull stripping, e.g. OASIS30ANTs
 petprep_skull_strip_t1w:             ""     # Skull-strip behaviour: auto, skip, or force
 petprep_skull_strip_fixed_seed:      false  # Use a fixed random seed for skull stripping
-petprep_submm_recon:                 ""     # true → --submm-recon | false → --no-submm-recon | blank → omit
-petprep_fs_no_reconall:              false  # Skip FreeSurfer recon-all (use pre-existing surfaces)
+petprep_submm_recon:                 ""     # true/blank → default (submm recon on) | false → --no-submm-recon
+petprep_fs_no_reconall:              false  # Skip FreeSurfer recon-all (use pre-existing surfaces); when true, --fs-subjects-dir is omitted (mutually exclusive in petprep)
 petprep_fs_no_resume:                false  # Do not resume an interrupted FreeSurfer run
 
 # ─── PETprep: PET processing ──────────────────────────────────────────────────
 petprep_petref:                      ""     # PET reference frame for registration: template, twa, sum, first5min, or auto
 petprep_pet2anat_dof:                ""     # Degrees of freedom for PET→T1 registration: 6 (rigid), 9, or 12 (full affine)
 petprep_pet2anat_method:             ""     # Registration algorithm: mri_coreg, robust, ants, or auto
-petprep_pet2anat_no_anat_crop:       false  # Disable anatomical image cropping before registration
 petprep_hmc_fwhm:                    ""     # Gaussian smoothing FWHM (mm) applied before head motion correction
 petprep_hmc_start_time:              ""     # Skip frames before this time (seconds) for HMC
 petprep_hmc_init_frame:              ""     # Frame index to use as HMC initialisation reference
 petprep_hmc_init_frame_fix:          false  # Use the init frame as fixed reference throughout HMC
 petprep_hmc_off:                     false  # Disable head motion correction entirely
-petprep_force_bbr:                   false  # Force boundary-based registration for PET→T1
-petprep_force_no_bbr:                false  # Disable boundary-based registration
+petprep_force_bbr:                   false  # Force boundary-based registration for PET→T1 (passed as --force bbr)
+petprep_force_no_bbr:                false  # Disable boundary-based registration (passed as --force no-bbr)
 
 # ─── PETprep: segmentation & PVC ──────────────────────────────────────────────
-petprep_seg:                         ""     # Segmentation atlases, e.g. "gtm brainstem aparcaseg" (space-separated)
-petprep_ref_mask_name:               ""     # Name of the reference region mask for SUVR computation
-petprep_ref_mask_index:              ""     # Index/indices within the mask (space-separated)
+petprep_seg:                         ""     # Segmentation atlas, single value: gtm, brainstem, thalamicNuclei, hippocampusAmygdala, wm, raphe, or limbic
+petprep_ref_mask_name:               ""     # Reference region mask for pharmacokinetic quantification: cerebellum, semiovale, neocortex, thalamus, cc, or custom name
+petprep_ref_mask_index:              ""     # Label index/indices (space-separated) — required only for custom masks, not for the named presets above
 petprep_pvc_tool:                    ""     # Partial volume correction software: petpvc or petsurfer
 petprep_pvc_method:                  ""     # PVC algorithm, e.g. GTM, RBV, IY
 petprep_pvc_psf:                     ""     # Scanner point spread function FWHM in mm (space-separated x y z)

@@ -3,9 +3,11 @@
 # Submits FastSurfer segmentation and surface reconstruction as chained SLURM jobs.
 # All SBATCH directives are read from the run_config file in the pipeline config.
 # Echoes the surface job ID to stdout; all other output goes to stderr.
+# If --reuse is passed and a completed run (scripts/recon-all.done) already
+# exists for the subject, no jobs are submitted and "REUSED" is echoed instead.
 #
 # Usage (called by charon.sh):
-#   SURF_JOB_ID=$(bash run_fastsurfer.sh --subject <sub> --t1 <path> --config <path>)
+#   SURF_JOB_ID=$(bash run_fastsurfer.sh --subject <sub> --t1 <path> --config <path> [--reuse])
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/utils/logging.sh"
@@ -14,12 +16,15 @@ source "$SCRIPT_DIR/utils/logging.sh"
 # ARGUMENT PARSING
 # ============================================================
 
+REUSE=false
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --subject) SUBJECT=$2; shift 2;;
         --session) SESSION=$2; shift 2;;
         --t1)      T1_FILE=$2; shift 2;;
         --config)  CONFIG=$2;  shift 2;;
+        --reuse)   REUSE=true; shift;;
         *) shift;;
     esac
 done
@@ -44,20 +49,21 @@ fi
 
 # Segmentation SLURM settings
 SEG_ACCOUNT="$(_slurm fastsurfer_seg_account)"
+SEG_PARTITION="$(_slurm fastsurfer_seg_partition)"
 SEG_CPUS="$(_slurm fastsurfer_seg_cpus_per_task)"
 SEG_MEM="$(_slurm fastsurfer_seg_mem)"
-SEG_GRES="$(_slurm fastsurfer_seg_gres)"
+SEG_GPUS="$(_slurm fastsurfer_seg_gpus)"
 SEG_CONSTRAINT="$(_slurm fastsurfer_seg_constraint)"
 SEG_TIME="$(_slurm fastsurfer_seg_time)"
 
 # Surface SLURM settings
 SURF_ACCOUNT="$(_slurm fastsurfer_surf_account)"
+SURF_PARTITION="$(_slurm fastsurfer_surf_partition)"
 SURF_CPUS="$(_slurm fastsurfer_surf_cpus_per_task)"
 SURF_MEM="$(_slurm fastsurfer_surf_mem)"
 SURF_TIME="$(_slurm fastsurfer_surf_time)"
 
 # FastSurfer tool options
-FS_3T="$(_slurm fastsurfer_3T)"
 FS_THREADS="$(_slurm fastsurfer_threads)"
 
 if [[ "$PILOT" != "true" && ( -z "$SEG_ACCOUNT" || -z "$SURF_ACCOUNT" ) ]]; then
@@ -79,6 +85,49 @@ LICENSE_DIR="$(dirname "$FS_LICENSE")"
 LICENSE_FNAME="$(basename "$FS_LICENSE")"
 
 # ============================================================
+# FIELD STRENGTH DETECTION
+# ============================================================
+
+T1_JSON="${T1_FILE%.nii.gz}"
+T1_JSON="${T1_JSON%.nii}.json"
+
+IS_3T=false
+if [[ -f "$T1_JSON" ]]; then
+    FIELD_STRENGTH=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(d.get('MagneticFieldStrength', ''))
+except Exception:
+    pass
+" "$T1_JSON" 2>/dev/null)
+    case "$FIELD_STRENGTH" in
+        3|3.0) IS_3T=true;  log_info "Detected 3T scanner for $SUBJECT — passing --3T to FastSurfer" >&2 ;;
+        "")    log_warn "MagneticFieldStrength not found in $T1_JSON — not passing --3T" >&2 ;;
+        *)     log_info "Detected ${FIELD_STRENGTH}T scanner for $SUBJECT — not passing --3T" >&2 ;;
+    esac
+else
+    log_warn "No T1 sidecar JSON found at $T1_JSON — not passing --3T" >&2
+fi
+
+# ============================================================
+# REUSE CHECK
+# ============================================================
+
+RECON_DONE="${FS_OUTDIR}/${SUBJECT}/scripts/recon-all.done"
+
+if [[ "$REUSE" == true && -f "$RECON_DONE" ]]; then
+    log_info "FastSurfer output already complete for $SUBJECT (found $RECON_DONE) — reusing" >&2
+    echo "REUSED"
+    exit 0
+fi
+
+if [[ "$REUSE" == true && -d "${FS_OUTDIR}/${SUBJECT}" ]]; then
+    log_warn "Incomplete FastSurfer output found for $SUBJECT (no recon-all.done) — removing ${FS_OUTDIR}/${SUBJECT} and reprocessing" >&2
+    rm -rf "${FS_OUTDIR}/${SUBJECT}"
+fi
+
+# ============================================================
 # SUBMIT SEGMENTATION JOB
 # ============================================================
 
@@ -87,9 +136,10 @@ SEG_SCRIPT="${LOG_DIR}/seg_${SUBJECT#sub-}.sh"
     echo "#!/bin/bash"
     echo "#SBATCH --job-name=seg_${SUBJECT#sub-}"
     echo "#SBATCH --account=${SEG_ACCOUNT}"
+    [[ -n "$SEG_PARTITION"  ]] && echo "#SBATCH -p ${SEG_PARTITION}"
     [[ -n "$SEG_CPUS"       ]] && echo "#SBATCH --cpus-per-task=${SEG_CPUS}"
     [[ -n "$SEG_MEM"        ]] && echo "#SBATCH --mem=${SEG_MEM}"
-    [[ -n "$SEG_GRES"       ]] && echo "#SBATCH --gres=${SEG_GRES}"
+    [[ -n "$SEG_GPUS"       ]] && echo "#SBATCH --gpus=${SEG_GPUS}"
     [[ -n "$SEG_CONSTRAINT" ]] && echo "#SBATCH -C ${SEG_CONSTRAINT}"
     [[ -n "$SEG_TIME"       ]] && echo "#SBATCH --time=${SEG_TIME}"
     echo "#SBATCH --output=${LOG_DIR}/seg_${SUBJECT#sub-}_%j.log"
@@ -105,7 +155,7 @@ SEG_SCRIPT="${LOG_DIR}/seg_${SUBJECT#sub-}.sh"
     echo "  --fs_license /fs_license/${LICENSE_FNAME} \\"
     echo "  --t1 /data/${T1_FNAME} \\"
     echo "  --sid ${SUBJECT} --sd /output \\"
-    [[ "$FS_3T" == "true" ]] && echo "  --3T \\"
+    [[ "$IS_3T" == "true" ]] && echo "  --3T \\"
     echo "  --threads ${FS_THREADS:-${SEG_CPUS:-4}} --seg_only"
 } > "$SEG_SCRIPT"
 
@@ -131,6 +181,7 @@ SURF_SCRIPT="${LOG_DIR}/surf_${SUBJECT#sub-}.sh"
     echo "#!/bin/bash"
     echo "#SBATCH --job-name=surf_${SUBJECT#sub-}"
     echo "#SBATCH --account=${SURF_ACCOUNT}"
+    [[ -n "$SURF_PARTITION" ]] && echo "#SBATCH -p ${SURF_PARTITION}"
     [[ -n "$SURF_CPUS" ]] && echo "#SBATCH --cpus-per-task=${SURF_CPUS}"
     [[ -n "$SURF_MEM"  ]] && echo "#SBATCH --mem=${SURF_MEM}"
     [[ -n "$SURF_TIME" ]] && echo "#SBATCH --time=${SURF_TIME}"
@@ -148,7 +199,7 @@ SURF_SCRIPT="${LOG_DIR}/surf_${SUBJECT#sub-}.sh"
     echo "  --fs_license /fs_license/${LICENSE_FNAME} \\"
     echo "  --t1 /data/${T1_FNAME} \\"
     echo "  --sid ${SUBJECT} --sd /output \\"
-    [[ "$FS_3T" == "true" ]] && echo "  --3T \\"
+    [[ "$IS_3T" == "true" ]] && echo "  --3T \\"
     echo "  --threads ${FS_THREADS:-${SURF_CPUS:-4}} --surf_only"
 } > "$SURF_SCRIPT"
 

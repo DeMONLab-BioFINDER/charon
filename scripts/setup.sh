@@ -261,6 +261,19 @@ else
     fi
 fi
 
+FAKE_BIDS_DIR="$WORKDIR/bids"
+if [[ "$REUSE" == true && -f "$FAKE_BIDS_DIR/dataset_description.json" ]]; then
+    log_info "Reusing existing fake BIDS directory: $FAKE_BIDS_DIR"
+else
+    bash "$SCRIPT_DIR/build_fake_bids.sh" \
+        --pairs  "$WORKDIR/image_pairs.tsv" \
+        --outdir "$FAKE_BIDS_DIR"
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to build fake BIDS directory. Aborting."
+        exit 1
+    fi
+fi
+
 if [[ -n "$RUN_CONFIG" ]]; then
     if [[ "$REUSE" == true && -f "$WORKDIR/run_config.yaml" ]]; then
         log_info "Reusing existing SLURM options in workdir"

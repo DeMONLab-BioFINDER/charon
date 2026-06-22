@@ -15,6 +15,8 @@ source "$SCRIPT_DIR/utils/logging.sh"
 # ARGUMENT PARSING
 # ============================================================
 
+REUSE=false
+
 while [[ $# -gt 0 ]]; do
     case $1 in
         --subject)    SUBJECT=$2;    shift 2;;
@@ -23,6 +25,7 @@ while [[ $# -gt 0 ]]; do
         --t1)         T1_FILE=$2;    shift 2;;
         --config)     CONFIG=$2;     shift 2;;
         --dependency) DEPENDENCY=$2; shift 2;;
+        --reuse)      REUSE=true;    shift;;
         *) shift;;
     esac
 done
@@ -64,7 +67,8 @@ fi
 # PATHS
 # ============================================================
 
-BIDS_DIR="${DATASET_DIR}/${DATASET}"
+REAL_BIDS_DIR="${DATASET_DIR}/${DATASET}"
+FAKE_BIDS_DIR="${WORKDIR}/bids"
 SESSION_DIR="$WORKDIR/$SUBJECT${SESSION:+/$SESSION}"
 FS_OUTDIR="$SESSION_DIR/fastsurfer"
 PETPREP_OUTDIR="$SESSION_DIR/petprep"
@@ -73,6 +77,15 @@ LOG_DIR="$SESSION_DIR/logs"
 LICENSE_DIR="$(dirname "$FS_LICENSE")"
 LICENSE_FNAME="$(basename "$FS_LICENSE")"
 PARTICIPANT="${SUBJECT#sub-}"
+
+# ============================================================
+# REUSE: DELETE EXISTING PETPREP OUTPUT
+# ============================================================
+
+if [[ "$REUSE" == true && -d "$PETPREP_OUTDIR" ]]; then
+    log_warn "Deleting existing PETprep output for $SUBJECT: $PETPREP_OUTDIR" >&2
+    rm -rf "$PETPREP_OUTDIR"
+fi
 
 # ============================================================
 # SUBMIT PETPREP JOB
@@ -102,7 +115,7 @@ fi
 PETPREP_EXTRA_ARGS=""
 
 # Input / Output
-_flag skip_bids_validation          "--skip-bids-validation"
+_flag skip_bids_validation          "--skip_bids_validation"
 _val  output_spaces                 "--output-spaces"
 _val  output_layout                 "--output-layout"
 _val  level                         "--level"
@@ -110,31 +123,34 @@ _val  level                         "--level"
 # Subject / Session
 
 # Anatomical
-_val  subject_anatomical_reference  "--subject-anatomical-reference"
 _val  anatref                       "--anatref"
 _flag longitudinal                  "--longitudinal"
 _val  ignore                        "--ignore"
 _val  skull_strip_template          "--skull-strip-template"
 _val  skull_strip_t1w               "--skull-strip-t1w"
 _flag skull_strip_fixed_seed        "--skull-strip-fixed-seed"
+FS_NO_RECONALL="$(_slurm petprep_fs_no_reconall)"
 _flag fs_no_reconall                "--fs-no-reconall"
 _flag fs_no_resume                  "--fs-no-resume"
 smr="$(_slurm petprep_submm_recon)"
-[[ "$smr" == "true"  ]] && PETPREP_EXTRA_ARGS+=" --submm-recon"
+# --submm-recon is the default; petprep only exposes --no-submm-recon to disable it.
 [[ "$smr" == "false" ]] && PETPREP_EXTRA_ARGS+=" --no-submm-recon"
 
 # PET processing
 _val  petref                        "--petref"
 _val  pet2anat_dof                  "--pet2anat-dof"
 _val  pet2anat_method               "--pet2anat-method"
-_flag pet2anat_no_anat_crop         "--pet2anat-no-anat-crop"
 _val  hmc_fwhm                      "--hmc-fwhm"
 _val  hmc_start_time                "--hmc-start-time"
 _val  hmc_init_frame                "--hmc-init-frame"
 _flag hmc_init_frame_fix            "--hmc-init-frame-fix"
 _flag hmc_off                       "--hmc-off"
-_flag force_bbr                     "--force-bbr"
-_flag force_no_bbr                  "--force-no-bbr"
+
+# --force-bbr/--force-no-bbr are deprecated in favour of --force {bbr,no-bbr}
+FORCE_OPTS=""
+[[ "$(_slurm petprep_force_bbr)"    == "true" ]] && FORCE_OPTS+=" bbr"
+[[ "$(_slurm petprep_force_no_bbr)" == "true" ]] && FORCE_OPTS+=" no-bbr"
+[[ -n "$FORCE_OPTS" ]] && PETPREP_EXTRA_ARGS+=" --force${FORCE_OPTS}"
 
 # Segmentation & PVC
 _val  seg                           "--seg"
@@ -177,6 +193,8 @@ PETPREP_SCRIPT="${LOG_DIR}/pp_${SUBJECT#sub-}.sh"
     echo ""
     echo "module load singularity"
     echo ""
+    echo "mkdir -p ${PETPREP_OUTDIR} ${PETPREP_WORKDIR}"
+    echo ""
     echo "export TEMPLATEFLOW_HOME=\"${TEMPLATEFLOW_HOME}\""
     echo "export APPTAINERENV_TEMPLATEFLOW_HOME=\"/templateflow\""
     echo "export FS_LICENSE=\"${FS_LICENSE}\""
@@ -186,7 +204,8 @@ PETPREP_SCRIPT="${LOG_DIR}/pp_${SUBJECT#sub-}.sh"
     echo ""
     echo "singularity run --cleanenv \\"
     echo "    --env TEMPLATEFLOW_HOME=/templateflow \\"
-    echo "    -B ${BIDS_DIR}:/data \\"
+    echo "    -B ${FAKE_BIDS_DIR}:/data \\"
+    echo "    -B ${REAL_BIDS_DIR}:${REAL_BIDS_DIR} \\"
     echo "    -B ${PETPREP_OUTDIR}:/out \\"
     echo "    -B ${LICENSE_DIR}:/freesurfer_license \\"
     echo "    -B ${PETPREP_WORKDIR}:/work \\"
@@ -195,9 +214,9 @@ PETPREP_SCRIPT="${LOG_DIR}/pp_${SUBJECT#sub-}.sh"
     echo "    ${PETPREP_SIF} /data /out participant \\"
     echo "    --participant-label ${PARTICIPANT} \\"
     echo "    --fs-license-file /freesurfer_license/${LICENSE_FNAME} \\"
-    echo "    --fs-subjects-dir /freesurfer \\"
+    [[ "$FS_NO_RECONALL" != "true" ]] && echo "    --fs-subjects-dir /freesurfer \\"
     echo "    -w /work \\"
-    echo "    --nthreads ${NTHREADS} \\"
+    echo "    --nprocs ${NTHREADS} \\"
     echo "    --omp-nthreads ${OMP_NTHREADS} \\"
     ALL_EXTRA=""
     [[ "$PP_STOP_ON_CRASH" == "true" ]] && ALL_EXTRA+=" --stop-on-first-crash"
@@ -205,21 +224,19 @@ PETPREP_SCRIPT="${LOG_DIR}/pp_${SUBJECT#sub-}.sh"
     [[ "$PP_VERBOSE"       == "true" ]] && ALL_EXTRA+=" -v"
     ALL_EXTRA+="$PETPREP_EXTRA_ARGS"
     if [[ -n "$ALL_EXTRA" ]]; then
-        echo "    --mem_mb ${MEM_MB} \\"
+        echo "    --mem ${MEM_MB} \\"
         echo "    ${ALL_EXTRA# }"
     else
-        echo "    --mem_mb ${MEM_MB}"
+        echo "    --mem ${MEM_MB}"
     fi
 } > "$PETPREP_SCRIPT"
 
 if [[ "$PILOT" == "true" ]]; then
     log_info "DRY RUN — PETprep job for $SUBJECT (would depend on ${DEPENDENCY:-none}):" >&2
     cat "$PETPREP_SCRIPT" >&2
-    rm -f "$PETPREP_SCRIPT"
     PETPREP_JOB_ID="DRY_RUN"
 else
     PETPREP_JOB_ID=$(sbatch --parsable "$PETPREP_SCRIPT")
-    rm -f "$PETPREP_SCRIPT"
     if [[ -z "$PETPREP_JOB_ID" ]]; then
         log_error "Failed to submit PETprep job for $SUBJECT" >&2
         exit 1

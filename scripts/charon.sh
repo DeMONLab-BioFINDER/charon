@@ -83,13 +83,15 @@ fi
 # ARGUMENT PARSING
 # ============================================================
 
-# parse --help and --workdir; pass all original args through to setup.sh
+# parse --help, --workdir and --reuse; pass all original args through to setup.sh
 WORKDIR="${DEFAULT_WORKDIR}"
+REUSE=false
 ORIGINAL_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --workdir) WORKDIR=$2; shift 2;;
+        --reuse)   REUSE=true; shift;;
         --help|-h) usage;;
         *) shift;;
     esac
@@ -190,11 +192,15 @@ while IFS=$'\t' read -r SUBJECT PET_FILE T1_FILE DAYDIFF; do
     fi
 
     # --- FastSurfer (seg + surf, chained internally) ---
-    FS_JOB_ID=$(bash "$SCRIPT_DIR/run_fastsurfer.sh" \
-        --subject "$SUBJECT" \
-        --session "$SESSION" \
-        --t1      "$T1_FILE" \
-        --config  "$CONFIG_FILE")
+    FASTSURFER_ARGS=(
+        --subject "$SUBJECT"
+        --session "$SESSION"
+        --t1      "$T1_FILE"
+        --config  "$CONFIG_FILE"
+    )
+    [[ "$REUSE" == true ]] && FASTSURFER_ARGS+=(--reuse)
+
+    FS_JOB_ID=$(bash "$SCRIPT_DIR/run_fastsurfer.sh" "${FASTSURFER_ARGS[@]}")
 
     if [[ $? -ne 0 || -z "$FS_JOB_ID" ]]; then
         log_error "FastSurfer submission failed for $SUBJECT — skipping"
@@ -202,17 +208,26 @@ while IFS=$'\t' read -r SUBJECT PET_FILE T1_FILE DAYDIFF; do
         FAILED_SUBJECTS+=("$SUBJECT (FastSurfer)")
         continue
     fi
-    [[ "$FS_JOB_ID" == "DRY_RUN" ]] && log_info "FastSurfer dry run complete for $SUBJECT" \
-        || log_info "FastSurfer submitted for $SUBJECT (surf job: $FS_JOB_ID)"
 
-    # --- PETprep (depends on FastSurfer surf) ---
-    PETPREP_JOB_ID=$(bash "$SCRIPT_DIR/run_petprep.sh" \
-        --subject    "$SUBJECT" \
-        --session    "$SESSION" \
-        --pet        "$PET_FILE" \
-        --t1         "$T1_FILE" \
-        --config     "$CONFIG_FILE" \
-        --dependency "$FS_JOB_ID")
+    PETPREP_DEPENDENCY="$FS_JOB_ID"
+    case "$FS_JOB_ID" in
+        DRY_RUN) log_info "FastSurfer dry run complete for $SUBJECT" ;;
+        REUSED)  log_info "Reusing existing FastSurfer output for $SUBJECT"; PETPREP_DEPENDENCY="" ;;
+        *)       log_info "FastSurfer submitted for $SUBJECT (surf job: $FS_JOB_ID)" ;;
+    esac
+
+    # --- PETprep (depends on FastSurfer surf, unless reused) ---
+    PETPREP_ARGS=(
+        --subject    "$SUBJECT"
+        --session    "$SESSION"
+        --pet        "$PET_FILE"
+        --t1         "$T1_FILE"
+        --config     "$CONFIG_FILE"
+        --dependency "$PETPREP_DEPENDENCY"
+    )
+    [[ "$REUSE" == true ]] && PETPREP_ARGS+=(--reuse)
+
+    PETPREP_JOB_ID=$(bash "$SCRIPT_DIR/run_petprep.sh" "${PETPREP_ARGS[@]}")
 
     if [[ $? -ne 0 || -z "$PETPREP_JOB_ID" ]]; then
         log_error "PETprep submission failed for $SUBJECT — skipping"
@@ -252,7 +267,7 @@ elif [[ ${#ALL_PETPREP_JOB_IDS[@]} -gt 0 && -f "$WORKDIR/run_config.yaml" ]]; th
     FINALIZE_TIME="$(_rcfg finalize_time)"
     DEPENDENCY_STR="afterany:$(IFS=':'; echo "${ALL_PETPREP_JOB_IDS[*]}")"
 
-    FINALIZE_SCRIPT="$(mktemp /tmp/finalize_XXXXXX.sh)"
+    FINALIZE_SCRIPT="$WORKDIR/finalize.sh"
     {
     cat << EOF
 #!/bin/bash
@@ -279,7 +294,6 @@ EOF
             log_info "Finalize job submitted: $FINALIZE_JOB_ID (runs after all PETprep jobs)"
         fi
     fi
-    rm -f "$FINALIZE_SCRIPT"
 fi
 
 # ============================================================
