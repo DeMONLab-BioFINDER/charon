@@ -167,7 +167,7 @@ bash scripts/charon.sh \
 
 | Argument | Default | Description |
 |---|---|---|
-| `--mri_pet_daydiff` | `365` | Maximum number of days allowed between the T1w and PET scan dates. Ignored if `--image_pairs` is provided. |
+| `--mri_pet_daydiff` | `10000` | Maximum number of days allowed between the T1w and PET scan dates. The default is set absurdly high so all available pairs are kept unless you lower it. Ignored if `--image_pairs` is provided. |
 | `--scan_selection` | `earliest` | When multiple valid pairs exist for a subject, keep the `earliest` or `latest` PET scan date, or `all` to retain every valid pair. Ignored if `--image_pairs`, `--no_session`, or `--ses_format label` is provided. |
 | `--ses_format` | `date` | Session label format. `date`: labels must be `YYYYMMDD` and scans are paired by date. `label`: labels are arbitrary (e.g. `bl`, `fu1`) and scans are paired by subject + matching session label. `--mri_pet_daydiff` and `--scan_selection` are ignored. |
 | `--no_session` | `false` | Dataset has no session level, charon pairs T1w and PET scans by subject only. `--mri_pet_daydiff` and `--scan_selection` are ignored. |
@@ -217,7 +217,6 @@ finalize_mem:           ""
 finalize_time:          ""
 
 # ─── FastSurfer options ───────────────────────────────────────────────────────
-fastsurfer_3T:      true    # Set false for 1.5T scanners
 fastsurfer_threads: ""      # Thread count; defaults to fastsurfer_seg_cpus_per_task
 
 # ─── PETprep options ─────────────────────────────────────────────────────────
