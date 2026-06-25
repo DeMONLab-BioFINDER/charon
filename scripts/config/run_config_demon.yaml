@@ -3,8 +3,7 @@ fastsurfer_seg_account:       sens2023026  # Bianca project allocation this coho
 fastsurfer_seg_partition:     node         # Bianca's GPU-capable partition, segmentation needs a GPU
 fastsurfer_seg_cpus_per_task: 8            # Found to be optimal for FastSurfer segmentation on Bianca; more cores doesn't help, fewer cores slows it down
 fastsurfer_seg_mem:           7G           # Segmentation's memory footprint is modest and GPU-bound; 7G avoids over-reserving a shared resource
-fastsurfer_seg_gpus:          1            # FastSurfer only ever uses a single GPU — requesting more would just sit idle and block other jobs. Bianca requires --gpus=N with the -C gpu constraint below
-fastsurfer_seg_constraint:    gpu          # Required on Bianca to actually land on a GPU-equipped node
+fastsurfer_seg_constraint:    gpu          # Required on Bianca to actually land on a GPU-equipped node. GPU access then comes from singularity --nv — Bianca's SelectType plugin rejects GRES requests (--gpus=/--gres=), confirmed by a real submission failure
 fastsurfer_seg_time:          00:20:00     # Segmentation alone (without surface recon) finishes well under 20 min/subject on GPU; kept tight so failed jobs don't sit queued
 
 # ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────

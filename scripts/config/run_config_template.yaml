@@ -7,8 +7,7 @@ fastsurfer_seg_account:       ""    # SLURM project account
 fastsurfer_seg_partition:     ""    # SLURM partition, e.g. node
 fastsurfer_seg_cpus_per_task: ""    # CPU cores per task
 fastsurfer_seg_mem:           ""    # Total memory, e.g. 7G
-fastsurfer_seg_gpus:          ""    # Number of GPUs to request
-fastsurfer_seg_constraint:    ""    # Node feature constraint, e.g. gpu
+fastsurfer_seg_constraint:    ""    # Node feature constraint, e.g. gpu — GPU access comes from this + singularity --nv, not from a GRES request (some clusters' SelectType plugin rejects --gpus=/--gres=)
 fastsurfer_seg_time:          ""    # Wall time limit HH:MM:SS
 
 # ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────
