@@ -7,28 +7,37 @@ fastsurfer_seg_account:       ""    # SLURM project account
 fastsurfer_seg_partition:     ""    # SLURM partition, e.g. node
 fastsurfer_seg_cpus_per_task: ""    # CPU cores per task
 fastsurfer_seg_mem:           ""    # Total memory, e.g. 7G
-fastsurfer_seg_gpus:          ""    # Number of GPUs to request (Bianca: --gpus=N with -C gpu constraint)
+fastsurfer_seg_gpus:          ""    # Number of GPUs to request
 fastsurfer_seg_constraint:    ""    # Node feature constraint, e.g. gpu
 fastsurfer_seg_time:          ""    # Wall time limit HH:MM:SS
 
 # ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────
-fastsurfer_surf_account:       ""
+fastsurfer_surf_account:       ""    # SLURM project account
 fastsurfer_surf_partition:     ""    # SLURM partition, e.g. node
-fastsurfer_surf_cpus_per_task: ""
+fastsurfer_surf_cpus_per_task: ""    # CPU cores per task
 fastsurfer_surf_mem:           ""    # Surface recon is memory-intensive; 16G+ recommended
-fastsurfer_surf_time:          ""
+fastsurfer_surf_time:          ""    # Wall time limit HH:MM:SS
 
 # ─── SLURM: PETprep ──────────────────────────────────────────────────────────
-petprep_account:    ""
+petprep_account:    ""    # SLURM project account
 petprep_partition:  ""    # SLURM partition, e.g. node
 petprep_ntasks:     ""    # Tasks allocated; also sets --nthreads passed to PETprep
 petprep_time:       ""    # PETprep is slow; allow at least 8–20h per subject
 
 # ─── SLURM: Finalize ─────────────────────────────────────────────────────────
-finalize_account:       ""
+finalize_account:       ""    # SLURM project account
 finalize_cpus_per_task: ""    # 2 CPUs is sufficient for status check + tar
 finalize_mem:           ""    # 4G is sufficient; increase for very large cohorts
 finalize_time:          ""    # Time to write status TSV and compress workdir
+
+# ─── SLURM: Restore from outdir ──────────────────────────────────────────────
+# Used by setup.sh when --workdir is missing data that --outdir's archives still
+# have (e.g. after finalize.sh's workdir cleanup). Required unless --pilot is set.
+restore_account:       ""    # SLURM project account
+restore_partition:     ""    # SLURM partition, e.g. core
+restore_cpus_per_task: ""    # 2 CPUs is sufficient for tar extraction
+restore_mem:           ""    # Increase for very large cumulative archives
+restore_time:          ""    # Time to extract fastsurfer_crosssectional.tar.gz and/or charon_crosssectional_<tracer>.tar.gz
 
 # ─── FastSurfer options ───────────────────────────────────────────────────────
 fastsurfer_threads: ""      # Thread count passed to FastSurfer; defaults to fastsurfer_seg_cpus_per_task

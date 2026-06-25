@@ -57,7 +57,7 @@ charon/
 │   ├── run_petprep.sh          # Submits PETprep SLURM job
 │   ├── run_statistics.sh       # Stub (not yet implemented)
 │   ├── run_qc.sh               # Stub (not yet implemented)
-│   ├── finalize.sh             # Writes status TSV and compresses workdir
+│   ├── finalize.sh             # Writes status TSV and compresses fastsurfer/charon outputs
 │   ├── config/
 │   │   ├── defaults.sh                  # Default values for all arguments
 │   │   └── run_config_template.yaml     # Template for SLURM + tool options
@@ -121,7 +121,7 @@ cd charon
 
 ```bash
 cp scripts/config/run_config_template.yaml my_run_config.yaml
-# Fill in your SLURM account, resources, and tool options
+# Fill in your SLURM details and tool options
 ```
 
 ### 3. Run the pipeline
@@ -131,9 +131,7 @@ bash scripts/charon.sh \
     --dataset           cohort_name \
     --dataset_dir       /path/to/bids \
     --tracer            tracer_label \
-    --suffix            myproject \
     --workdir           /path/to/workdir \
-    --outdir            /path/to/outdir \
     --fs_license        /path/to/license.txt \
     --petprep_sif       /path/to/petprep.sif \
     --fastsurfer_sif    /path/to/fastsurfer.sif \
@@ -141,7 +139,7 @@ bash scripts/charon.sh \
     --run_config        my_run_config.yaml
 ```
 
-`charon.sh` will validate inputs, find MRI/PET pairs, submit all SLURM jobs, and return. Monitor job progress with `squeue`.
+`charon.sh` will validate inputs, find MRI/PET pairs, submit all SLURM jobs, and return. Monitor job progress with `squeue`. Since `--outdir` is omitted above, it defaults to `/path/to/bids/cohort_name/derivatives`; pass `--outdir` explicitly to put it elsewhere.
 
 ---
 
@@ -154,9 +152,7 @@ bash scripts/charon.sh \
 | `--dataset` | Dataset name (e.g. `ADNI`). Used to locate `<dataset_dir>/<dataset>/`. |
 | `--dataset_dir` | Path to the directory containing the dataset. |
 | `--tracer` | Tracer name as it appears in the filename (e.g. `ftp`, `mk6240`). |
-| `--suffix` | Label for this processing run (e.g. `v1`, `myproject`). Used in output filenames. |
 | `--workdir` | Working directory. Created if absent. All intermediate outputs go here. |
-| `--outdir` | Output directory. Final archive and status TSV are written here. |
 | `--fs_license` | Path to a valid FreeSurfer `license.txt`. |
 | `--petprep_sif` | Path to the PETprep Singularity image. |
 | `--fastsurfer_sif` | Path to the FastSurfer Singularity image. |
@@ -167,6 +163,7 @@ bash scripts/charon.sh \
 
 | Argument | Default | Description |
 |---|---|---|
+| `--outdir` | `<dataset_dir>/<dataset>/derivatives` | Output directory. Final archives and status TSV are written here. |
 | `--mri_pet_daydiff` | `10000` | Maximum number of days allowed between the T1w and PET scan dates. The default is set absurdly high so all available pairs are kept unless you lower it. Ignored if `--image_pairs` is provided. |
 | `--scan_selection` | `earliest` | When multiple valid pairs exist for a subject, keep the `earliest` or `latest` PET scan date, or `all` to retain every valid pair. Ignored if `--image_pairs`, `--no_session`, or `--ses_format label` is provided. |
 | `--ses_format` | `date` | Session label format. `date`: labels must be `YYYYMMDD` and scans are paired by date. `label`: labels are arbitrary (e.g. `bl`, `fu1`) and scans are paired by subject + matching session label. `--mri_pet_daydiff` and `--scan_selection` are ignored. |
@@ -185,47 +182,7 @@ The run configuration file controls SLURM resources and tool-level flags for eac
 cp scripts/config/run_config_template.yaml my_run_config.yaml
 ```
 
-Pass it to the pipeline with `--run_config my_run_config.yaml`.
-
-### Full reference
-
-```yaml
-# ─── SLURM: FastSurfer segmentation (GPU) ────────────────────────────────────
-fastsurfer_seg_account:       ""   # SLURM project account
-fastsurfer_seg_cpus_per_task: ""   # Number of CPUs
-fastsurfer_seg_mem:           ""   # Memory, e.g. 7G
-fastsurfer_seg_gres:          ""   # GPU resource, e.g. gpu:1
-fastsurfer_seg_constraint:    ""   # Node constraint, e.g. gpu
-fastsurfer_seg_time:          ""   # Wall time HH:MM:SS
-
-# ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────
-fastsurfer_surf_account:       ""
-fastsurfer_surf_cpus_per_task: ""
-fastsurfer_surf_mem:           ""
-fastsurfer_surf_time:          ""
-
-# ─── SLURM: PETprep ──────────────────────────────────────────────────────────
-petprep_account:    ""
-petprep_partition:  ""   # e.g. node
-petprep_ntasks:     ""   # Number of tasks (used as --nthreads)
-petprep_time:       ""
-
-# ─── SLURM: Finalize ─────────────────────────────────────────────────────────
-finalize_account:       ""
-finalize_cpus_per_task: ""
-finalize_mem:           ""
-finalize_time:          ""
-
-# ─── FastSurfer options ───────────────────────────────────────────────────────
-fastsurfer_threads: ""      # Thread count; defaults to fastsurfer_seg_cpus_per_task
-
-# ─── PETprep options ─────────────────────────────────────────────────────────
-petprep_mem_mb:              32000
-petprep_omp_nthreads:        ""     # Defaults to petprep_ntasks / 2
-petprep_stop_on_first_crash: true
-petprep_notrack:             true
-petprep_verbose:             true
-```
+Pass it to the pipeline with `--run_config my_run_config.yaml`. See `scripts/config/run_config_template.yaml` itself for the full list of options — every option there has an inline comment explaining what it does, so it's kept as the single source of truth rather than duplicated here.
 
 **Empty values** are omitted from the generated SLURM job script and SLURM will use its cluster defaults. **Boolean flags** must be explicitly set to `true` to be included; any other value (including blank) means the flag is omitted.
 
@@ -239,7 +196,7 @@ Charon needs to know which T1w scan to pair with which PET scan for each subject
 
 When `--image_pairs` is not provided, charon searches the dataset for all T1w and PET files, matches them by subject ID, and keeps only pairs where the scan dates are within `--mri_pet_daydiff` days of each other. If a subject has multiple valid pairs, `--scan_selection` (`earliest`, `latest`, or `all`) picks one or keeps all.
 
-The discovered pairs are saved to `<workdir>/image_pairs.tsv` and written to the pipeline config.
+The discovered pairs are saved to `<workdir>/charon_crosssectional_<tracer>/image_pairs.tsv` and written to the pipeline config.
 
 **Subjects that have both modalities but no pair within the day range produce a warning (not an error) and are skipped**.
 
@@ -277,10 +234,10 @@ setup_subject  (local, synchronous)
                     finalize    ← Status TSV + archive
 ```
 
-- **`fs_seg`** runs FastSurfer with `--seg_only` using a GPU node.
-- **`fs_surf`** runs FastSurfer with `--surf_only` on a CPU node, depending on `fs_seg` completing successfully.
-- **`petprep`** runs PETprep on the full BIDS dataset for one participant, depending on `fs_surf` completing successfully.
-- **`finalize`** runs after **all** PETprep jobs have finished (regardless of success/failure), writes the status TSV, and compresses the workdir.
+- **`fs_seg`** runs FastSurfer with `--seg_only` using a GPU node. Skipped entirely if `recon-all.done` already exists for this (subject, T1 session) — see [Reuse mode](#reuse-mode).
+- **`fs_surf`** runs FastSurfer with `--surf_only` on a CPU node, depending on `fs_seg` completing successfully. Also skipped if already complete.
+- **`petprep`** runs PETprep on the full BIDS dataset for one participant, depending on `fs_surf` completing successfully (no dependency if FastSurfer was reused). Skipped entirely if a previous run for this subject/session already logged `PETPrep finished successfully!` — checked regardless of `--reuse`, the same way FastSurfer's reuse check works. Unlike FastSurfer, PETprep has no sentinel *file*, so this is detected from its own SLURM log (`pp_<participant>_*.log`) rather than an output artifact.
+- **`finalize`** runs after **all** *actually-submitted* PETprep jobs have finished (regardless of success/failure), writes the status TSV, and compresses `fastsurfer_crosssectional/` and `charon_crosssectional_<tracer>/` into separate archives. If every subject in the run was reused (no fresh PETprep jobs at all), `finalize` is still submitted, just without a `--dependency` — there's nothing left to wait on.
 
 `charon.sh` itself returns immediately after all jobs are submitted.
 
@@ -288,43 +245,86 @@ setup_subject  (local, synchronous)
 
 ## Output structure
 
+`--workdir` contains two kinds of folders: one shared, tracer-independent `fastsurfer_crosssectional/`, and one `charon_crosssectional_<tracer>/` per `--tracer` you've run against this workdir. This lets multiple tracers share the same anatomical (T1w) FastSurfer output instead of recomputing it per tracer — FastSurfer is keyed by the T1w scan's **own** session label, not the PET session it happens to be paired with, so the same recon is reused for every PET pair (any tracer, any --scan_selection all duplicate) that shares that T1w scan.
+
 ### During processing: `<workdir>/`
 
 ```
 workdir/
-├── charon_config.yaml                          # Resolved pipeline configuration
-├── charon.log                                  # Full pipeline log (including finalize output)
-├── image_pairs.tsv                             # MRI/PET pairs used for this run
-├── run_config.yaml                             # Copy of your run configuration file
-├── <dataset>_<tracer>_<suffix>_processing_status.tsv   # Per-subject status (written by finalize)
+├── fastsurfer_crosssectional/                  # Shared across all tracer runs in this workdir
+│   └── sub-<label>/
+│       └── ses-<t1_label>/        # session label from the T1w filename; omitted for --no_session datasets
+│           ├── logs/
+│           │   ├── seg_<id>_<jobid>.log
+│           │   └── surf_<id>_<jobid>.log
+│           └── sub-<label>/
+│               ├── mri/        # Segmentation outputs (aparc.DKTatlas+aseg.deep.mgz, etc.)
+│               ├── surf/       # Surface files (lh.pial, rh.pial, etc.)
+│               ├── label/
+│               └── stats/
 │
-├── sub-<label>/
-│   └── ses-<pet_label>/           # session label from the PET filename; omitted for --no_session datasets
-│       ├── logs/
-│       │   ├── seg_<id>_<jobid>.log
-│       │   ├── surf_<id>_<jobid>.log
-│       │   └── pp_<id>_<jobid>.log
-│       ├── fastsurfer/
-│       │   └── sub-<label>/
-│       │       ├── mri/        # Segmentation outputs (aparc.DKTatlas+aseg.deep.mgz, etc.)
-│       │       ├── surf/       # Surface files (lh.pial, rh.pial, etc.)
-│       │       ├── label/
-│       │       └── stats/
-│       └── petprep/
-│           └── sub-<label>/    # PETprep outputs
-│               └── ses-<label>/
-│                   ├── pet/
-│                   └── figures/
-└── ...
+└── charon_crosssectional_<tracer>/             # One per --tracer run against this workdir
+    ├── charon_config.yaml                          # Resolved pipeline configuration
+    ├── charon.log                                  # Full pipeline log (including finalize output)
+    ├── image_pairs.tsv                             # MRI/PET pairs used for this run
+    ├── run_config.yaml                             # Copy of your run configuration file
+    ├── charon_crosssectional_<tracer>_processing_status.tsv   # Per-subject status (written by finalize)
+    │
+    ├── bids/                                       # Fake BIDS dir built by build_fake_bids.sh (symlinks to real T1w/PET files)
+    │   ├── dataset_description.json
+    │   └── sub-<label>/
+    │       └── ses-<pet_label>/
+    │           ├── anat/   sub-<label>_ses-<pet_label>_*_T1w.nii.gz   # symlink
+    │           └── pet/    sub-<label>_ses-<pet_label>_*_pet.nii.gz   # symlink
+    │
+    └── sub-<label>/
+        └── ses-<pet_label>/           # session label from the PET filename; omitted for --no_session datasets
+            ├── logs/
+            │   └── pp_<id>_<jobid>.log
+            ├── fastsurfer -> ../../../../fastsurfer_crosssectional/sub-<label>/ses-<t1_label>   # symlink
+            └── petprep/
+                └── sub-<label>/    # PETprep outputs
+                    └── ses-<label>/
+                        ├── pet/
+                        └── figures/
 ```
+
+### After finalize: per-session compaction
+
+After writing the status TSV, and *before* building the two full archives below, `finalize.sh` compresses each `sub-<label>/ses-<label>/` directory **in place**, on both sides, and deletes the live directory. It also compresses the fake `bids/` directory the same way:
+
+```
+fastsurfer_crosssectional/sub-<label>/ses-<t1_label>.tar.gz
+charon_crosssectional_<tracer>/sub-<label>/ses-<pet_label>.tar.gz
+charon_crosssectional_<tracer>/bids.tar.gz
+```
+
+(For `--no_session` datasets, the leaf directory is `sub-<label>/` itself, so it's `sub-<label>.tar.gz`.)
+
+This saves disk space in `--workdir`, and because it runs *before* the full archives are built, the full archives end up containing these compressed `.tar.gz` files rather than raw directories — extracting `fastsurfer_crosssectional.tar.gz` from `outdir` gives you `sub-<label>/ses-<t1_label>.tar.gz`, not a live `mri/`/`surf/` tree, and extracting `charon_crosssectional_<tracer>.tar.gz` gives you `bids.tar.gz` rather than a live `bids/` directory of symlinks. If a later `charon.sh` run (e.g. a different `--tracer`) needs to reuse an already-archived FastSurfer session, `run_fastsurfer.sh` transparently re-extracts it before checking for `recon-all.done`. There is no equivalent transparent re-extraction for `bids.tar.gz` — if you `--reuse` a tracer run after its `finalize.sh` has already run, `setup.sh` will simply rebuild `bids/` from scratch (cheap, since it's just symlinks).
 
 ### Final outputs: `<outdir>/`
 
 ```
 outdir/
-├── <dataset>_<tracer>_<suffix>.tar.gz                       # Compressed workdir (petprep/work excluded)
-└── <dataset>_<tracer>_<suffix>_processing_status.tsv        # Also inside the archive
+├── fastsurfer_crosssectional.tar.gz                         # Compressed fastsurfer_crosssectional/ (sessions already compacted to per-session .tar.gz, see above)
+└── charon_crosssectional_<tracer>.tar.gz                    # Compressed charon_crosssectional_<tracer>/ (sessions already compacted; petprep/work excluded)
 ```
+
+The processing status TSV itself lives at `<workdir>/charon_crosssectional_<tracer>/charon_crosssectional_<tracer>_processing_status.tsv` and is included inside the second archive — it is not written to `outdir` separately.
+
+The two archives are independent — the `fastsurfer` symlink inside `charon_crosssectional_<tracer>.tar.gz` is **not** dereferenced, so it will dangle if you extract that archive standalone without also extracting `fastsurfer_crosssectional.tar.gz` alongside it.
+
+### After finalize: workdir cleanup
+
+Once both full archives above are written, `finalize.sh` makes a second pass over the status TSV and deletes the now-redundant per-session `.tar.gz` from `--workdir` for every row that succeeded — independently on each side:
+
+- **Charon side**: `sub-<label>/ses-<pet_label>.tar.gz` is removed if that row's `petprep` status is `success`.
+- **FastSurfer side**: `sub-<label>/ses-<t1_label>.tar.gz` is removed if both `fastsurfer_seg` and `fastsurfer_surf` are `success` — this is a **shared** recon, so it's deleted from `--workdir` even though other tracer runs against the same `--workdir` (or even a concurrently running one) might otherwise have reused it directly; see [Restoring from `--outdir`](#restoring-from---outdir) for how a later run recovers it from the archive instead.
+
+Failed (or `file_not_found`) rows are left untouched in `--workdir` for inspection or a later `--reuse` retry.
+
+If **every** row in the status TSV succeeded, the entire `charon_crosssectional_<tracer>/` working directory is removed — but `charon.log` and `charon_config.yaml` are copied to `outdir/charon_crosssectional_<tracer>.log` and `outdir/charon_crosssectional_<tracer>_config.yaml` first, since `finalize.sh`'s own SLURM job is still appending to `charon.log` inside the directory it's about to delete, and that record would otherwise be lost. If even one row failed, the directory (now containing only the failed rows' data, plus the config/log/pairs/bids files) is kept as-is.
 
 The status TSV contains one row per image pair with columns:
 
@@ -332,10 +332,10 @@ The status TSV contains one row per image pair with columns:
 subject  t1_path  pet_path  day_diff  fastsurfer_seg  fastsurfer_surf  petprep
 ```
 
-Success is determined by the presence of key output files:
-- **fastsurfer_seg**: `mri/aparc.DKTatlas+aseg.deep.mgz`
-- **fastsurfer_surf**: `surf/lh.pial`
-- **petprep**: non-empty `sub-<participant>/` output directory
+Success is determined by:
+- **fastsurfer_seg**: presence of `mri/aparc.DKTatlas+aseg.deep.mgz`
+- **fastsurfer_surf**: presence of `surf/lh.pial`
+- **petprep**: `pp_<participant>_*.log` contains `PETPrep finished successfully!` — the same check `run_petprep.sh` uses to decide whether to skip resubmission
 
 ---
 
@@ -348,7 +348,6 @@ bash scripts/charon.sh \
     --dataset_dir pilot/dataset \
     --dataset     POINTER \
     --tracer      mk6240 \
-    --suffix      pilot01 \
     --workdir     pilot/workdir \
     --outdir      pilot/out \
     --pilot
@@ -376,7 +375,16 @@ In reuse mode:
 - The existing `image_pairs.tsv` is reused.
 - Copied config files (`run_config.yaml`) are not overwritten.
 
-Note: `--reuse` only controls what `setup.sh` preserves. It does not prevent SLURM jobs from re-running — use SLURM dependencies or check outputs manually if you want to avoid reprocessing completed subjects.
+Note: `--reuse` only controls what `setup.sh` preserves (config, image pairs, run config). FastSurfer and PETprep have their own independent reuse checks — see [Pipeline steps](#pipeline-steps) — that skip resubmission whenever a subject's previous run already completed successfully, regardless of whether `--reuse` was passed.
+
+### Restoring from `--outdir`
+
+`--workdir` is missing if a previous run on a cohort + tracer combination exited entirely successfully, since `finalize.sh` deletes a subject/session's data from `--workdir` as soon as it succeeds (see [After finalize: workdir cleanup](#after-finalize-workdir-cleanup)). As long as `--outdir` still holds the full archives, `setup.sh` and `run_fastsurfer.sh` transparently restore from there instead of starting over or reprocessing:
+
+- **FastSurfer** (`fastsurfer_crosssectional/`): whenever `outdir/fastsurfer_crosssectional.tar.gz` exists, `setup.sh` restores it into `--workdir` before anything else runs — **regardless of `--reuse`** (consistent with FastSurfer's "always reuse a complete recon" behavior) and **regardless of whether `--workdir` already has some sessions locally**. 
+- **Charon/tracer run** (`charon_crosssectional_<tracer>/`): if `charon_config.yaml` is missing locally **and `--reuse` is passed**, `setup.sh` extracts the whole `outdir/charon_crosssectional_<tracer>.tar.gz` into `--workdir` first, restoring `image_pairs.tsv`, `run_config.yaml`, `bids.tar.gz`, and the completed per-session archives. The existing-run check then proceeds exactly as if `--workdir` had never been touched. This is gated on `--reuse` (unlike the FastSurfer case, and because — unlike FastSurfer — a tracer's working directory is all-or-nothing rather than incrementally shared) so a plain re-run without `--reuse` against an empty `--workdir` still starts fresh rather than silently resurrecting a previous run.
+
+Because this extraction can be large, `setup.sh` never runs it inline on the login node: it writes a small job script, submits it with `sbatch --wait`, and blocks until it completes (requires `restore_account` etc. in `--run_config`; see [Run configuration file](#run-configuration-file)). The one exception is `--pilot` mode, which has no SLURM access at all, so the extraction runs inline there. In these cases, `charon.sh` no longer always "returns immediately", as it needs to wait for this extraction job to finish before submitting all slurm jobs.
 
 ---
 
@@ -389,16 +397,16 @@ Only occurs with the default `--ses_format date`. The session label does not con
 `--run_config` is a required argument. Ensure it is passed and the file exists at the given path.
 
 **FastSurfer seg/surf jobs immediately fail**
-Check `<workdir>/sub-<label>/logs/fs_seg_*`. Common causes: Singularity image not accessible from the compute node, GPU not allocated, or incorrect SIF path.
+Check `<workdir>/fastsurfer_crosssectional/sub-<label>/ses-<t1_label>/logs/seg_*` and `surf_*`. Common causes: Singularity image not accessible from the compute node, GPU not allocated, or incorrect SIF path.
 
 **PETprep job immediately fails**
-Check `<workdir>/sub-<label>/logs/petprep_*`. Common causes: TemplateFlow directory not accessible from compute nodes, FastSurfer surf did not complete (check surf log), or insufficient memory.
+Check `<workdir>/charon_crosssectional_<tracer>/sub-<label>/ses-<pet_label>/logs/pp_*`. Common causes: TemplateFlow directory not accessible from compute nodes, FastSurfer surf did not complete (check surf log), or insufficient memory.
 
 **Finalize job never runs**
-Ensure `finalize_account` is set in your run config. Also check that at least one PETprep job was submitted successfully — finalize is only submitted when `ALL_PETPREP_JOB_IDS` is non-empty.
+Ensure `finalize_account` is set in your run config. Also check that at least one subject made it through the per-subject loop without a submission failure — finalize is only submitted when `$N_SUCCESS -gt 0` (a subject counts here whether its PETprep job was freshly submitted or reused from a prior successful run).
 
-**`A charon run already exists in: <workdir>`**
-A previous run wrote a `charon_config.yaml` to that workdir. Either pass `--reuse` to continue the run, or specify a different `--workdir`.
+**`A charon run already exists in: <workdir>/charon_crosssectional_<tracer>`**
+A previous run with this `--tracer` (and `--workdir`) wrote a `charon_config.yaml` there. Either pass `--reuse` to continue that run, or use a different `--workdir` or `--tracer`. A different `--tracer` against the same `--workdir` is always treated as a new run and will reuse the shared `fastsurfer_crosssectional/` output where possible.
 
 **Jobs depend on a cancelled job and stay blocked**
 SLURM `afterok` dependencies are skipped if the parent job is cancelled. Use `scontrol` to release or cancel the dependent jobs manually.

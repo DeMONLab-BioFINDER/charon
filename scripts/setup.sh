@@ -3,9 +3,9 @@
 # Validates arguments, sets up the working environment, and writes the charon config.
 #
 # Usage:
-#   bash setup.sh --dataset dataset_name --dataset_dir /path/to/directory 
-#                 --tracer tracer_name --suffix myproject \
-#                 --workdir /path/to/workdir --outdir /path/to/outdir \
+#   bash setup.sh --dataset dataset_name --dataset_dir /path/to/directory
+#                 --tracer tracer_name \
+#                 --workdir /path/to/workdir [--outdir /path/to/outdir] \
 #                 --fs_license /path/to/license.txt \
 #                 --petprep_sif /path/to/petprep.sif \
 #                 --fastsurfer_sif /path/to/fastsurfer.sif \
@@ -17,6 +17,8 @@
 #                 [--templateflow_home /path/to/templateflow] \
 #                 --run_config /path/to/run_config.yaml \
 #                 [--reuse]
+#
+# --outdir defaults to <dataset_dir>/<dataset>/derivatives if omitted.
 
 # ============================================================
 # ENVIRONMENT
@@ -33,7 +35,6 @@ source "$SCRIPT_DIR/config/defaults.sh"
 DATASET="${DEFAULT_DATASET}"
 DATASET_DIR="${DEFAULT_DATASET_DIR}"
 TRACER="${DEFAULT_TRACER}"
-SUFFIX="${DEFAULT_SUFFIX}"
 WORKDIR="${DEFAULT_WORKDIR}"
 OUTDIR="${DEFAULT_OUTDIR}"
 FS_LICENSE="${DEFAULT_FS_LICENSE}"
@@ -54,8 +55,8 @@ SES_FORMAT="${DEFAULT_SES_FORMAT}"
 # ============================================================
 
 usage() {
-    echo "Usage: $0 --dataset <name> --dataset_dir <path> --tracer <tracer> --suffix <suffix>"
-    echo "          --workdir <path> --outdir <path>"
+    echo "Usage: $0 --dataset <name> --dataset_dir <path> --tracer <tracer>"
+    echo "          --workdir <path> [--outdir <path>]"
     echo "          --fs_license <path/to/license.txt>"
     echo "          --petprep_sif <path/to/petprep.sif>"
     echo "          --fastsurfer_sif <path/to/fastsurfer.sif>"
@@ -68,6 +69,8 @@ usage() {
     echo "          [--no_session]"
     echo "          [--reuse]"
     echo "          [--pilot]"
+    echo ""
+    echo "  --outdir defaults to <dataset_dir>/<dataset>/derivatives if omitted."
     exit 1
 }
 
@@ -76,7 +79,6 @@ while [[ $# -gt 0 ]]; do
         --dataset)         DATASET=$2;         shift 2;;
         --dataset_dir)     DATASET_DIR=$2;     shift 2;;
         --tracer)          TRACER=$2;          shift 2;;
-        --suffix)          SUFFIX=$2;          shift 2;;
         --workdir)         WORKDIR=$2;         shift 2;;
         --outdir)          OUTDIR=$2;          shift 2;;
         --fs_license)      FS_LICENSE=$2;      shift 2;;
@@ -95,6 +97,12 @@ while [[ $# -gt 0 ]]; do
         *) log_error "Unknown argument: $1"; usage;;
     esac
 done
+
+# Default outdir to <dataset_dir>/<dataset>/derivatives if not explicitly provided.
+# Validation below still catches a missing dataset/dataset_dir on its own terms.
+if [[ -z "$OUTDIR" && -n "$DATASET_DIR" && -n "$DATASET" ]]; then
+    OUTDIR="$DATASET_DIR/$DATASET/derivatives"
+fi
 
 if [[ -n "$IMAGE_PAIRS" ]]; then
     [[ "$MRI_PET_DAYDIFF_SET" == true    ]] && log_warn "--mri_pet_daydiff is ignored when --image_pairs is provided"
@@ -149,9 +157,8 @@ require_dir() {
 require_arg  "$DATASET"         "dataset"
 require_arg  "$DATASET_DIR"     "dataset_dir"
 require_arg  "$TRACER"          "tracer"
-require_arg  "$SUFFIX"          "suffix"
 require_arg  "$WORKDIR"         "workdir"
-require_arg  "$OUTDIR"          "outdir"
+require_arg  "$OUTDIR"          "outdir"   # only unset if dataset/dataset_dir are too, which already error above
 require_dir  "$DATASET_DIR"     "dataset_dir"
 require_file "$IMAGE_PAIRS"     "image_pairs"
 
@@ -207,17 +214,97 @@ fi
 
 # TODO: this only checks for existing config/log files, but we may want to also check for existing output files and warn about potential conflicts
 
-CONFIG_FILE="$WORKDIR/charon_config.yaml"
-LOGFILE="$WORKDIR/charon.log"
+FASTSURFER_DIR="$WORKDIR/fastsurfer_crosssectional"
+TRACER_DIR="$WORKDIR/charon_crosssectional_${TRACER}"
+CONFIG_FILE="$TRACER_DIR/charon_config.yaml"
+LOGFILE="$TRACER_DIR/charon.log"
+
+# ============================================================
+# RESTORE FROM OUTDIR
+# ============================================================
+# --workdir may have been wiped (e.g. to save disk, or by finalize.sh's own workdir
+# cleanup) while --outdir still holds the full archives from a previous run. Restore
+# them here, before the existing-run check below, so the rest of setup.sh sees the
+# same state it would if --workdir had never been touched. The extraction itself can
+# be large (the whole cumulative fastsurfer_crosssectional/ tree), so it's submitted
+# as a SLURM job and waited on rather than run inline on the login node — except in
+# --pilot mode, which has no SLURM access at all.
+#
+# FastSurfer restore always runs (when the archive exists), regardless of whether
+# --workdir already has *some* sessions: because finalize.sh deletes a subject's
+# recon from --workdir as soon as it succeeds, "missing locally" is the common case
+# for a second-or-later tracer run sharing this --workdir, not a rare one. A gzip-
+# compressed tar archive can't be cheaply spot-extracted (decompression is
+# sequential regardless of how many members you ask for), so there's no cheaper way
+# to fill in just the gaps — tar safely overlays onto existing content either way.
+
+FASTSURFER_OUTDIR_ARCHIVE="$OUTDIR/fastsurfer_crosssectional.tar.gz"
+NEED_FASTSURFER_RESTORE=false
+[[ -f "$FASTSURFER_OUTDIR_ARCHIVE" ]] && NEED_FASTSURFER_RESTORE=true
+
+CHARON_OUTDIR_ARCHIVE="$OUTDIR/charon_crosssectional_${TRACER}.tar.gz"
+NEED_CHARON_RESTORE=false
+[[ "$REUSE" == true && ! -f "$CONFIG_FILE" && -f "$CHARON_OUTDIR_ARCHIVE" ]] && NEED_CHARON_RESTORE=true
+
+if [[ "$NEED_FASTSURFER_RESTORE" == true || "$NEED_CHARON_RESTORE" == true ]]; then
+    mkdir -p "$WORKDIR" || { log_error "Failed to create workdir: $WORKDIR"; exit 1; }
+
+    if [[ "$PILOT" == true ]]; then
+        log_warn "Pilot mode — restoring from outdir inline (no SLURM access in pilot mode)"
+        if [[ "$NEED_FASTSURFER_RESTORE" == true ]]; then
+            log_info "Restoring fastsurfer_crosssectional/ from outdir archive: $FASTSURFER_OUTDIR_ARCHIVE"
+            tar -xzf "$FASTSURFER_OUTDIR_ARCHIVE" -C "$WORKDIR" || { log_error "Failed to extract $FASTSURFER_OUTDIR_ARCHIVE"; exit 1; }
+        fi
+        if [[ "$NEED_CHARON_RESTORE" == true ]]; then
+            log_info "Restoring charon_crosssectional_${TRACER}/ from outdir archive: $CHARON_OUTDIR_ARCHIVE"
+            tar -xzf "$CHARON_OUTDIR_ARCHIVE" -C "$WORKDIR" || { log_error "Failed to extract $CHARON_OUTDIR_ARCHIVE"; exit 1; }
+        fi
+    else
+        _rcfg() { grep "^${1}:" "$RUN_CONFIG" 2>/dev/null | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | xargs; }
+        RESTORE_ACCOUNT="$(_rcfg restore_account)"
+        RESTORE_PARTITION="$(_rcfg restore_partition)"
+        RESTORE_CPUS="$(_rcfg restore_cpus_per_task)"
+        RESTORE_MEM="$(_rcfg restore_mem)"
+        RESTORE_TIME="$(_rcfg restore_time)"
+
+        if [[ -z "$RESTORE_ACCOUNT" ]]; then
+            log_error "restore_account not set in run_config — required to restore archives from outdir on a compute node"
+            exit 1
+        fi
+
+        RESTORE_SCRIPT="$WORKDIR/restore_outdir.sh"
+        {
+            echo "#!/bin/bash"
+            echo "#SBATCH --job-name=restore_outdir"
+            echo "#SBATCH --account=${RESTORE_ACCOUNT}"
+            [[ -n "$RESTORE_PARTITION" ]] && echo "#SBATCH -p ${RESTORE_PARTITION}"
+            [[ -n "$RESTORE_CPUS" ]] && echo "#SBATCH --cpus-per-task=${RESTORE_CPUS}"
+            [[ -n "$RESTORE_MEM"  ]] && echo "#SBATCH --mem=${RESTORE_MEM}"
+            [[ -n "$RESTORE_TIME" ]] && echo "#SBATCH --time=${RESTORE_TIME}"
+            echo "#SBATCH --output=${WORKDIR}/restore_outdir_%j.log"
+            echo ""
+            [[ "$NEED_FASTSURFER_RESTORE" == true ]] && echo "tar -xzf '${FASTSURFER_OUTDIR_ARCHIVE}' -C '${WORKDIR}' || exit 1"
+            [[ "$NEED_CHARON_RESTORE"     == true ]] && echo "tar -xzf '${CHARON_OUTDIR_ARCHIVE}' -C '${WORKDIR}' || exit 1"
+        } > "$RESTORE_SCRIPT"
+
+        log_info "Submitting compute-node job to restore archive(s) from outdir (blocking until complete)..."
+        if RESTORE_JOB_ID=$(sbatch --wait --parsable "$RESTORE_SCRIPT"); then
+            log_success "Restore job $RESTORE_JOB_ID completed — see ${WORKDIR}/restore_outdir_${RESTORE_JOB_ID}.log"
+        else
+            log_error "Restore-from-outdir job failed — see ${WORKDIR}/restore_outdir_*.log"
+            exit 1
+        fi
+    fi
+fi
 
 if [[ -f "$CONFIG_FILE" ]]; then
     if [[ "$REUSE" == true ]]; then
-        log_warn "Existing charon run found in: $WORKDIR"
+        log_warn "Existing charon run found in: $TRACER_DIR"
         log_info "Reuse mode enabled — existing outputs will be reused where possible"
     else
-        log_error "A charon run already exists in: $WORKDIR"
+        log_error "A charon run already exists in: $TRACER_DIR"
         log_error "To reuse existing outputs, pass --reuse"
-        log_error "To start fresh, specify a different --workdir"
+        log_error "To start fresh, specify a different --workdir or --tracer"
         exit 1
     fi
 fi
@@ -234,14 +321,20 @@ mkdir -p "$WORKDIR" || { log_error "Failed to create workdir: $WORKDIR"; exit 1;
 log_info "Creating output directory: $OUTDIR"
 mkdir -p "$OUTDIR"  || { log_error "Failed to create outdir: $OUTDIR";   exit 1; }
 
+log_info "Creating shared FastSurfer directory: $FASTSURFER_DIR"
+mkdir -p "$FASTSURFER_DIR" || { log_error "Failed to create: $FASTSURFER_DIR"; exit 1; }
+
+log_info "Creating tracer working directory: $TRACER_DIR"
+mkdir -p "$TRACER_DIR" || { log_error "Failed to create: $TRACER_DIR"; exit 1; }
+
 # build or validate image pairs
-if [[ "$REUSE" == true && -f "$WORKDIR/image_pairs.tsv" ]]; then
-    log_info "Reusing existing image pairs in workdir"
+if [[ "$REUSE" == true && -f "$TRACER_DIR/image_pairs.tsv" ]]; then
+    log_info "Reusing existing image pairs in tracer working directory"
 else
     if [[ -n "$IMAGE_PAIRS" ]]; then
         bash "$SCRIPT_DIR/get_image_pairs.sh" \
             --image_pairs    "$IMAGE_PAIRS" \
-            --outfile        "$WORKDIR/image_pairs.tsv"
+            --outfile        "$TRACER_DIR/image_pairs.tsv"
     else
         PAIRS_ARGS=(
             --dataset_dir     "$DATASET_DIR"
@@ -250,7 +343,7 @@ else
             --mri_pet_daydiff "$MRI_PET_DAYDIFF"
             --scan_selection  "$SCAN_SELECTION"
             --ses_format      "$SES_FORMAT"
-            --outfile         "$WORKDIR/image_pairs.tsv"
+            --outfile         "$TRACER_DIR/image_pairs.tsv"
         )
         [[ "$NO_SESSION" == true ]] && PAIRS_ARGS+=(--no_session)
         bash "$SCRIPT_DIR/get_image_pairs.sh" "${PAIRS_ARGS[@]}"
@@ -261,12 +354,12 @@ else
     fi
 fi
 
-FAKE_BIDS_DIR="$WORKDIR/bids"
+FAKE_BIDS_DIR="$TRACER_DIR/bids"
 if [[ "$REUSE" == true && -f "$FAKE_BIDS_DIR/dataset_description.json" ]]; then
     log_info "Reusing existing fake BIDS directory: $FAKE_BIDS_DIR"
 else
     bash "$SCRIPT_DIR/build_fake_bids.sh" \
-        --pairs  "$WORKDIR/image_pairs.tsv" \
+        --pairs  "$TRACER_DIR/image_pairs.tsv" \
         --outdir "$FAKE_BIDS_DIR"
     if [[ $? -ne 0 ]]; then
         log_error "Failed to build fake BIDS directory. Aborting."
@@ -275,11 +368,11 @@ else
 fi
 
 if [[ -n "$RUN_CONFIG" ]]; then
-    if [[ "$REUSE" == true && -f "$WORKDIR/run_config.yaml" ]]; then
-        log_info "Reusing existing SLURM options in workdir"
+    if [[ "$REUSE" == true && -f "$TRACER_DIR/run_config.yaml" ]]; then
+        log_info "Reusing existing SLURM options in tracer working directory"
     else
-        cp "$RUN_CONFIG" "$WORKDIR/run_config.yaml"
-        log_info "Copied SLURM options to workdir"
+        cp "$RUN_CONFIG" "$TRACER_DIR/run_config.yaml"
+        log_info "Copied SLURM options to tracer working directory"
     fi
 fi
 
@@ -311,10 +404,11 @@ else
 dataset:              $DATASET
 dataset_dir:          $DATASET_DIR
 tracer:               $TRACER
-suffix:               $SUFFIX
 mri_pet_daydiff:      $MRI_PET_DAYDIFF
 workdir:              $WORKDIR
 outdir:               $OUTDIR
+fastsurfer_dir:       $FASTSURFER_DIR
+tracer_dir:           $TRACER_DIR
 fs_license:           $FS_LICENSE
 petprep_sif:          $PETPREP_SIF
 petprep_version:      $PETPREP_VERSION
@@ -324,11 +418,11 @@ templateflow_home:    $TEMPLATEFLOW_HOME
 EOF
 
     [[ "$PILOT" == true ]] && echo "pilot:                true"              >> "$CONFIG_FILE"
-    echo "image_pairs:          $WORKDIR/image_pairs.tsv" >> "$CONFIG_FILE"
+    echo "image_pairs:          $TRACER_DIR/image_pairs.tsv" >> "$CONFIG_FILE"
     [[ "$NO_SESSION"  == true  ]]                                              && echo "no_session:           true"              >> "$CONFIG_FILE"
     echo                                                                           "ses_format:           $SES_FORMAT"              >> "$CONFIG_FILE"
     [[ -z "$IMAGE_PAIRS" && "$NO_SESSION" != true && "$SES_FORMAT" != "label" ]] && echo "scan_selection:       $SCAN_SELECTION"   >> "$CONFIG_FILE"
-    [[ -n "$RUN_CONFIG"  ]] && echo "run_config:        $WORKDIR/run_config.yaml"  >> "$CONFIG_FILE"
+    [[ -n "$RUN_CONFIG"  ]] && echo "run_config:        $TRACER_DIR/run_config.yaml"  >> "$CONFIG_FILE"
 fi
 
 # ============================================================

@@ -1,0 +1,102 @@
+# ─── SLURM: FastSurfer segmentation (GPU) ────────────────────────────────────
+fastsurfer_seg_account:       sens2023026  # Bianca project allocation this cohort's compute is billed against
+fastsurfer_seg_partition:     node         # Bianca's GPU-capable partition, segmentation needs a GPU
+fastsurfer_seg_cpus_per_task: 8            # Found to be optimal for FastSurfer segmentation on Bianca; more cores doesn't help, fewer cores slows it down
+fastsurfer_seg_mem:           7G           # Segmentation's memory footprint is modest and GPU-bound; 7G avoids over-reserving a shared resource
+fastsurfer_seg_gpus:          1            # FastSurfer only ever uses a single GPU — requesting more would just sit idle and block other jobs. Bianca requires --gpus=N with the -C gpu constraint below
+fastsurfer_seg_constraint:    gpu          # Required on Bianca to actually land on a GPU-equipped node
+fastsurfer_seg_time:          00:20:00     # Segmentation alone (without surface recon) finishes well under 20 min/subject on GPU; kept tight so failed jobs don't sit queued
+
+# ─── SLURM: FastSurfer surface reconstruction (CPU) ──────────────────────────
+fastsurfer_surf_account:       sens2023026  # Same project allocation as segmentation
+fastsurfer_surf_partition:     core         # CPU-only step — no GPU needed, so it goes on Bianca's standard core partition instead of competing for GPU nodes
+fastsurfer_surf_cpus_per_task: 8            # Surface reconstruction is CPU-bound; 8 cores is a good balance between speed and not over-reserving a shared resource
+fastsurfer_surf_mem:           16G          # Surface recon is the memory-hungry FastSurfer stage; 16G avoids the OOM kills seen at lower allocations
+fastsurfer_surf_time:          2:30:00      # recon-all's surface stage typically takes 1-2/subject on CPU; 2.5h leaves headroom without wasting queue priority
+
+# ─── SLURM: PETprep ──────────────────────────────────────────────────────────
+petprep_account:   sens2023026  # Same project allocation
+petprep_partition: core         # CPU-only step
+petprep_ntasks:    8            # Sized to match petprep_omp_nthreads below (ntasks / 2); higher hasn't shown further speedup for a single-subject PETprep run
+petprep_time:      4:00:00      # petprep_level: full below runs every processing stage (surfaces, CIFTI, GTM); 4h covers that comfortably per subject
+
+# ─── SLURM: Finalize ─────────────────────────────────────────────────────────
+finalize_account:       sens2023026  # Same project allocation
+finalize_cpus_per_task: 2            # Finalize only writes a status TSV and runs tar
+finalize_mem:           4G           # Comfortable for an average cohort's size; bump up if a much larger cohort makes the tar step memory-hungry
+finalize_time:          01:00:00     # Generous margin over what writing the status TSV and compressing the workdir actually takes
+
+# ─── SLURM: Restore from outdir ──────────────────────────────────────────────
+restore_account:       sens2023026  # Same project allocation
+restore_partition:     core         # Same rationale as finalize — plain tar extraction, no GPU
+restore_cpus_per_task: 2            # Same as finalize — tar extraction doesn't benefit from more cores
+restore_mem:           4G           # Matches finalize_mem; revisit if a cohort's fastsurfer_crosssectional.tar.gz is very large
+restore_time:          01:00:00     # Matches finalize_time — same kind of job
+
+# ─── FastSurfer options ──────────────────────────────────────────────────────
+fastsurfer_threads: 4  # FastSurfer's surf_only step runs both hemispheres in parallel, hence 8/2
+
+# ─── PETprep: resources ──────────────────────────────────────────────────────
+petprep_mem_mb:       32000  # Sized for full-level processing (surfaces + CIFTI + GTM) without crowding other jobs on a shared core node
+petprep_omp_nthreads: 4      # Half of petprep_ntasks above, per PETprep's own recommendation for nthreads/omp-nthreads balance
+
+# ─── PETprep: execution flags ────────────────────────────────────────────────
+petprep_stop_on_first_crash: true  # Fail fast; for a cohort run, a silently-continuing crash just wastes compute on jobs we already know are bad
+petprep_notrack:             true  # Bianca is an air-gapped, sensitive-data system; no outbound usage telemetry is allowed
+petprep_verbose:             true  # Verbose logs are what make it possible to diagnose a failed subject after the fact without rerunning
+
+# ─── PETprep: input / output ─────────────────────────────────────────────────
+petprep_skip_bids_validation: true                       # charon's fake BIDS dir (symlinks + a minimal dataset_description.json) doesn't need re-validating every job
+petprep_output_spaces:        "MNI152NLin2009cAsym T1w"  # Both native (T1w) and template (MNI152) space outputs are needed downstream
+petprep_output_layout:        "bids"                     # Keeps PETprep's derivatives consistent with the rest of the pipeline's BIDS-style outputs
+petprep_level:                "full"                     # This cohort's downstream analysis (GTM parcellation, surface metrics) needs every processing stage, not just minimal/resampling
+
+# ─── PETprep: anatomical ─────────────────────────────────────────────────────
+petprep_anatref:                "t1w"          # Use the T1w image directly, no other anatomical reference image is needed
+petprep_longitudinal:           false          # charon cannot currently handle longitudinal processing mode — must stay false
+petprep_skull_strip_template:   "OASIS30ANTs"  # Standard ANTs-distributed brain template for skull-stripping; well-validated, no reason to deviate
+petprep_skull_strip_t1w:        "auto"         # Lets PETprep detect whether the input is already skull-stripped rather than forcing redundant stripping
+petprep_skull_strip_fixed_seed: false          # No specific need for run-to-run identical skull-strip output; left at default
+petprep_submm_recon:            false          # Submillimeter recon is not needed for our cohort's PETprep outputs
+petprep_fs_no_reconall:         false          # Must stay false as charon already ran FastSurfer separately, and false is what makes PETprep pass --fs-subjects-dir to reuse it instead of rerunning recon-all itself
+petprep_fs_no_resume:           false          # Effectively moot given fs_no_reconall above (PETprep isn't running its own recon-all), kept at default
+
+# ─── PETprep: PET processing ─────────────────────────────────────────────────
+petprep_petref:             "sum"   # PET reference frame for registration: sum of all frames
+petprep_pet2anat_dof:       6       # Rigid-body (6 DOF); PET and T1w are the same physical brain at the same session, so higher DOF would just risk overfitting to noise
+petprep_pet2anat_method:    "ants"  # Matches the ANTs-based skull-strip template above; consistent registration backend across steps
+petprep_hmc_fwhm:           ""      # Stick to PETprep's default smoothing for motion correction (10mm FWHM); no reason to override it
+petprep_hmc_start_time:     0       # No early frames need skipping for HMC initialisation
+petprep_hmc_init_frame:     "auto"  # Selects frame with highest uptake
+petprep_hmc_init_frame_fix: false   # No need to lock HMC to a single fixed reference frame throughout
+petprep_hmc_off:            false   # Motion correction stays on
+petprep_force_bbr:          false   # Let PETprep decide per-subject whether boundary-based registration is appropriate rather than forcing it for everyone
+petprep_force_no_bbr:       false   # Same
+
+# ─── PETprep: segmentation & PVC ─────────────────────────────────────────────
+petprep_seg:            ""  # PVC isn't enabled for this cohort 
+petprep_ref_mask_name:  ""  # Disabled
+petprep_ref_mask_index: ""  # Disabled
+petprep_pvc_tool:       ""  # PVC disabled
+petprep_pvc_method:     ""  # PVC disabled
+petprep_pvc_psf:        ""  # PVC disabled
+
+# ─── PETprep: surface & parcellation ─────────────────────────────────────────
+petprep_cifti_output:          "91k"  # HCP-standard density
+petprep_no_msm:                false  # MSM-Sulc stays on (default), improves cross-subject surface alignment, useful for group-level cortical comparisons
+petprep_medial_surface_nan:    true   # Overrides the template default; without this, medial wall vertices get assigned cortical values that don't reflect real anatomy and skew surface-wide summary stats
+petprep_project_goodvoxels:    false  # Not needed
+petprep_return_all_components: false  # Only the signal component is needed downstream, not the full ICA decomposition
+
+# ─── PETprep: confounds ──────────────────────────────────────────────────────
+petprep_fd_spike_threshold:    ""  # Not needed
+petprep_dvars_spike_threshold: ""  # Not needed
+
+# ─── PETprep: misc ───────────────────────────────────────────────────────────
+petprep_random_seed:               1909   # Hannah's lucky seed
+petprep_aggregate_session_reports: ""     # Sessions are reported individually, not aggregated
+petprep_track_carbon:              true   # Why not
+petprep_country_code:              "SWE"  # Bianca is hosted in Sweden
+petprep_write_graph:               false  # Diagnostic-only output; skipped on production runs to avoid extra clutter, easy to flip on when debugging one subject
+petprep_resource_monitor:          false  # Same, useful for troubleshooting a single job, unnecessary at cohort scale
+petprep_debug:                     ""     # Leave blank for full runs; set to debug or pdb temporarily when chasing down a specific failing subject

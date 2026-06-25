@@ -21,6 +21,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --subject)    SUBJECT=$2;    shift 2;;
         --session)    SESSION=$2;    shift 2;;
+        --t1_session) T1_SESSION=$2; shift 2;;
         --pet)        PET_FILE=$2;   shift 2;;
         --t1)         T1_FILE=$2;    shift 2;;
         --config)     CONFIG=$2;     shift 2;;
@@ -40,7 +41,8 @@ _slurm() { grep "^${1}:" "$RUN_CONFIG_FILE" 2>/dev/null | sed 's/^[^:]*:[[:space
 PETPREP_SIF="$(_cfg petprep_sif)"
 FS_LICENSE="$(_cfg fs_license)"
 OUTDIR="$(_cfg outdir)"
-WORKDIR="$(_cfg workdir)"
+TRACER_DIR="$(_cfg tracer_dir)"
+FASTSURFER_DIR="$(_cfg fastsurfer_dir)"
 DATASET_DIR="$(_cfg dataset_dir)"
 PILOT="$(_cfg pilot)"
 DATASET="$(_cfg dataset)"
@@ -68,15 +70,29 @@ fi
 # ============================================================
 
 REAL_BIDS_DIR="${DATASET_DIR}/${DATASET}"
-FAKE_BIDS_DIR="${WORKDIR}/bids"
-SESSION_DIR="$WORKDIR/$SUBJECT${SESSION:+/$SESSION}"
-FS_OUTDIR="$SESSION_DIR/fastsurfer"
+FAKE_BIDS_DIR="${TRACER_DIR}/bids"
+SESSION_DIR="$TRACER_DIR/$SUBJECT${SESSION:+/$SESSION}"
+FS_OUTDIR="$FASTSURFER_DIR/$SUBJECT${T1_SESSION:+/$T1_SESSION}"
 PETPREP_OUTDIR="$SESSION_DIR/petprep"
 PETPREP_WORKDIR="$SESSION_DIR/petprep/work"
 LOG_DIR="$SESSION_DIR/logs"
 LICENSE_DIR="$(dirname "$FS_LICENSE")"
 LICENSE_FNAME="$(basename "$FS_LICENSE")"
 PARTICIPANT="${SUBJECT#sub-}"
+
+# ============================================================
+# REUSE CHECK — skip resubmission entirely if a previous PETprep run for
+# this subject/session already completed successfully. PETprep has no
+# single sentinel file like FastSurfer's recon-all.done, so completion is
+# detected from its own log. Checked regardless of --reuse, consistent
+# with FastSurfer's "always reuse what's already done" behavior.
+# ============================================================
+
+if grep -q "PETPrep finished successfully!" "${LOG_DIR}"/pp_${PARTICIPANT}_*.log 2>/dev/null; then
+    log_info "PETprep already completed successfully for $SUBJECT — reusing" >&2
+    echo "REUSED"
+    exit 0
+fi
 
 # ============================================================
 # REUSE: DELETE EXISTING PETPREP OUTPUT

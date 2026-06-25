@@ -3,11 +3,15 @@
 # Submits FastSurfer segmentation and surface reconstruction as chained SLURM jobs.
 # All SBATCH directives are read from the run_config file in the pipeline config.
 # Echoes the surface job ID to stdout; all other output goes to stderr.
-# If --reuse is passed and a completed run (scripts/recon-all.done) already
-# exists for the subject, no jobs are submitted and "REUSED" is echoed instead.
+# Output lives under fastsurfer_dir/<subject>/<t1_session>/, shared across tracer
+# runs in the same --workdir. If a completed run (scripts/recon-all.done) already
+# exists there, no jobs are submitted and "REUSED" is echoed instead (regardless
+# of --reuse). If finalize.sh already compressed that session to <t1_session>.tar.gz
+# and removed the live directory, it is transparently re-extracted first. With
+# --reuse, an incomplete prior output is removed and reprocessed.
 #
 # Usage (called by charon.sh):
-#   SURF_JOB_ID=$(bash run_fastsurfer.sh --subject <sub> --t1 <path> --config <path> [--reuse])
+#   SURF_JOB_ID=$(bash run_fastsurfer.sh --subject <sub> --t1_session <ses> --t1 <path> --config <path> [--reuse])
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/utils/logging.sh"
@@ -20,11 +24,11 @@ REUSE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --subject) SUBJECT=$2; shift 2;;
-        --session) SESSION=$2; shift 2;;
-        --t1)      T1_FILE=$2; shift 2;;
-        --config)  CONFIG=$2;  shift 2;;
-        --reuse)   REUSE=true; shift;;
+        --subject)    SUBJECT=$2;    shift 2;;
+        --t1_session) T1_SESSION=$2; shift 2;;
+        --t1)         T1_FILE=$2;    shift 2;;
+        --config)     CONFIG=$2;     shift 2;;
+        --reuse)      REUSE=true;    shift;;
         *) shift;;
     esac
 done
@@ -38,7 +42,8 @@ _slurm() { grep "^${1}:" "$RUN_CONFIG_FILE" 2>/dev/null | sed 's/^[^:]*:[[:space
 
 FASTSURFER_SIF="$(_cfg fastsurfer_sif)"
 FS_LICENSE="$(_cfg fs_license)"
-WORKDIR="$(_cfg workdir)"
+FASTSURFER_DIR="$(_cfg fastsurfer_dir)"
+OUTDIR="$(_cfg outdir)"
 RUN_CONFIG_FILE="$(_cfg run_config)"
 PILOT="$(_cfg pilot)"
 
@@ -75,9 +80,8 @@ fi
 # PATHS
 # ============================================================
 
-SESSION_DIR="$WORKDIR/$SUBJECT${SESSION:+/$SESSION}"
-FS_OUTDIR="$SESSION_DIR/fastsurfer"
-LOG_DIR="$SESSION_DIR/logs"
+FS_OUTDIR="$FASTSURFER_DIR/$SUBJECT${T1_SESSION:+/$T1_SESSION}"
+LOG_DIR="$FS_OUTDIR/logs"
 
 T1_DIR="$(dirname "$T1_FILE")"
 T1_FNAME="$(basename "$T1_FILE")"
@@ -115,8 +119,38 @@ fi
 # ============================================================
 
 RECON_DONE="${FS_OUTDIR}/${SUBJECT}/scripts/recon-all.done"
+FS_ARCHIVE="${FS_OUTDIR}.tar.gz"
 
-if [[ "$REUSE" == true && -f "$RECON_DONE" ]]; then
+# Fall back to the cumulative outdir archive if this session isn't available locally
+# at all (e.g. --workdir was wiped, or this session was never copied back from outdir).
+# setup.sh already restores the whole fastsurfer_crosssectional/ tree up front when
+# --workdir is missing entirely; this covers the case where --workdir has *some*
+# sessions (e.g. from another tracer run) but not this particular one.
+FASTSURFER_OUTDIR_ARCHIVE="${OUTDIR}/fastsurfer_crosssectional.tar.gz"
+if [[ ! -f "$RECON_DONE" && ! -f "$FS_ARCHIVE" && -f "$FASTSURFER_OUTDIR_ARCHIVE" ]]; then
+    ARCHIVE_MEMBER="$(basename "$FASTSURFER_DIR")${FS_ARCHIVE#"$FASTSURFER_DIR"}"
+    log_info "No local FastSurfer output for $SUBJECT — checking outdir archive: $FASTSURFER_OUTDIR_ARCHIVE" >&2
+    mkdir -p "$FASTSURFER_DIR"
+    if tar -xzf "$FASTSURFER_OUTDIR_ARCHIVE" -C "$FASTSURFER_DIR" --strip-components=1 "$ARCHIVE_MEMBER" 2>/dev/null; then
+        log_info "Recovered FastSurfer session for $SUBJECT from outdir archive" >&2
+    else
+        log_warn "Session not found in outdir archive — will reprocess $SUBJECT" >&2
+    fi
+fi
+
+# finalize.sh compresses completed sessions in place and removes the live directory to
+# save disk space. If that happened, transparently re-extract it before checking for reuse.
+if [[ ! -f "$RECON_DONE" && -f "$FS_ARCHIVE" ]]; then
+    log_info "Found archived FastSurfer output for $SUBJECT — extracting $FS_ARCHIVE" >&2
+    mkdir -p "$(dirname "$FS_OUTDIR")"
+    tar -xzf "$FS_ARCHIVE" -C "$(dirname "$FS_OUTDIR")" \
+        || log_warn "Failed to extract $FS_ARCHIVE — will reprocess $SUBJECT" >&2
+fi
+
+# FastSurfer output is keyed by (subject, T1 session) and shared across tracer runs in
+# this --workdir, so a complete recon is always reused regardless of --reuse — rerunning
+# it would just recompute an identical result (or race with the run that produced it).
+if [[ -f "$RECON_DONE" ]]; then
     log_info "FastSurfer output already complete for $SUBJECT (found $RECON_DONE) — reusing" >&2
     echo "REUSED"
     exit 0
