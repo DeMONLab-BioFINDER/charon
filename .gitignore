@@ -5,4 +5,5 @@ scripts/fastsurfer_seg.sh
 scripts/fastsurfer_surf.sh
 scripts/utils/copy_pilot_data.sh
 scripts/config/run_config_pointer.yaml
+scripts/config/run_config_demon.yaml
 scripts/build_fake_bids.sh
